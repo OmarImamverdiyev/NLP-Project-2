@@ -7,7 +7,8 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
-from core.ml import LogisticBinary, classification_metrics, mcnemar_exact_p, train_test_split_xy
+from core.ml import LogisticBinary, classification_metrics, mcnemar_exact_p
+from core.paths import SEED
 
 
 ABBREV_SET = {
@@ -142,6 +143,55 @@ def _is_array_memory_error(exc: Exception) -> bool:
     return isinstance(exc, MemoryError) or exc.__class__.__name__ == "_ArrayMemoryError"
 
 
+def split_train_dev_test_xy(
+    x: np.ndarray,
+    y: np.ndarray,
+    test_ratio: float = 0.2,
+    dev_ratio_within_train: float = 0.1,
+    seed: int = SEED,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    idx = np.arange(len(y))
+    rng = np.random.default_rng(seed)
+    rng.shuffle(idx)
+
+    n_test = int(len(y) * test_ratio)
+    n_train_pool = len(y) - n_test
+    n_dev = int(n_train_pool * dev_ratio_within_train)
+
+    test_idx = idx[:n_test]
+    dev_idx = idx[n_test : n_test + n_dev]
+    train_idx = idx[n_test + n_dev :]
+
+    return (
+        x[train_idx],
+        x[dev_idx],
+        x[test_idx],
+        y[train_idx],
+        y[dev_idx],
+        y[test_idx],
+    )
+
+
+def select_best_threshold_by_accuracy(
+    proba: np.ndarray,
+    y_true: np.ndarray,
+    start: float = 0.35,
+    stop: float = 0.8,
+    step: float = 0.01,
+) -> Tuple[float, float]:
+    best_acc = -1.0
+    best_threshold = 0.5
+    threshold = start
+    while threshold <= stop + 1e-12:
+        pred = (proba >= threshold).astype(np.int64)
+        acc = float((pred == y_true).mean())
+        if acc > best_acc:
+            best_acc = acc
+            best_threshold = threshold
+        threshold += step
+    return best_threshold, best_acc
+
+
 def run_task4(
     news_path: Path,
     max_docs: int | None = 30000,
@@ -180,30 +230,50 @@ def run_task4(
 
     x = x.astype(np.float32, copy=False)
     x[:, :2] = np.clip(x[:, :2], 0.0, 30.0)
-    xtr, xte, ytr, yte = train_test_split_xy(x, y_work, test_ratio=0.2)
+    xtr, xdv, xte, ytr, ydv, yte = split_train_dev_test_xy(
+        x,
+        y_work,
+        test_ratio=0.2,
+        dev_ratio_within_train=0.1,
+        seed=SEED,
+    )
 
     l2_model = LogisticBinary(
-        lr=0.1, epochs=20, reg_type="l2", reg_strength=5e-4
+        lr=0.2, epochs=40, reg_type="l2", reg_strength=1e-4
     ).fit(xtr, ytr)
-    pred_l2 = l2_model.predict(xte)
+    l2_threshold, l2_dev_acc = select_best_threshold_by_accuracy(
+        l2_model.predict_proba(xdv), ydv
+    )
+    pred_l2 = (l2_model.predict_proba(xte) >= l2_threshold).astype(np.int64)
     m_l2 = classification_metrics(yte, pred_l2)
 
     l1_model = LogisticBinary(
-        lr=0.1, epochs=20, reg_type="l1", reg_strength=1e-4
+        lr=0.2, epochs=40, reg_type="l1", reg_strength=1e-4
     ).fit(xtr, ytr)
-    pred_l1 = l1_model.predict(xte)
+    l1_threshold, l1_dev_acc = select_best_threshold_by_accuracy(
+        l1_model.predict_proba(xdv), ydv
+    )
+    pred_l1 = (l1_model.predict_proba(xte) >= l1_threshold).astype(np.int64)
     m_l1 = classification_metrics(yte, pred_l1)
 
     p_l2_vs_l1 = mcnemar_exact_p(yte, pred_l2, pred_l1)
+    majority_baseline_acc = max(float((yte == 1).mean()), float((yte == 0).mean()))
     return {
         "num_examples": float(len(y)),
         "used_examples": float(len(y_work)),
         "used_vocab_cap": float(cur_vocab),
         "num_features": float(x.shape[1]),
+        "train_examples": float(len(ytr)),
+        "dev_examples": float(len(ydv)),
+        "test_examples": float(len(yte)),
+        "majority_baseline_test_accuracy": majority_baseline_acc,
+        "l2_dev_accuracy": l2_dev_acc,
+        "l2_threshold": l2_threshold,
         "l2_accuracy": m_l2["accuracy"],
         "l2_f1": m_l2["f1"],
+        "l1_dev_accuracy": l1_dev_acc,
+        "l1_threshold": l1_threshold,
         "l1_accuracy": m_l1["accuracy"],
         "l1_f1": m_l1["f1"],
         "p_l2_vs_l1": p_l2_vs_l1,
     }
-

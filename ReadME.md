@@ -85,7 +85,7 @@ python Task4/run_task4.py --max-docs 20000 --max-examples 30000 --max-vocab-toke
 
 - Task 1 and Task 2 split news sentences into train/dev/test = 80%/10%/10% in `core/language_modeling.py` (`train_dev_test_split`).
 - Task 3 shuffles sentiment samples and uses train/test = 80%/20% in `core/sentiment_task.py` (`n_test = int(len(y) * 0.2)`).
-- Task 4 uses train/test = 80%/20% through `core/ml.py` (`train_test_split_xy(..., test_ratio=0.2)`), called from `core/sentence_boundary_task.py`.
+- Task 4 uses train/dev/test = 72%/8%/20% in `core/sentence_boundary_task.py` (`split_train_dev_test_xy` with test ratio 0.2 and dev as 10% of the remaining train pool).
 - Splits are randomized with seed `42` defined in `core/paths.py`.
 
 ### Shared runner
@@ -102,4 +102,16 @@ python Task4/run_task4.py --max-docs 20000 --max-examples 30000 --max-vocab-toke
 
 ```powershell
 python assignment_tasks.py
+```
+
+### Tune Task 4 (how accuracy was improved)
+
+```powershell
+python Task4/tune_task4.py
+```
+
+Optional save:
+
+```powershell
+python Task4/tune_task4.py --save-json Task4/tuning_results.json
 ```
