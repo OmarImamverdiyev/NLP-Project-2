@@ -12,11 +12,39 @@ from core.paths import SEED
 
 
 ABBREV_SET = {
+    # Azerbaijani honorifics/titles
+    "dr",
+    "prof",
+    "dos",
+    "akad",
+    "c",
+    "x",
+    # Azerbaijani frequent abbreviations
+    "məs",
+    "təxm",
+    "səh",
+    "madd",
+    "bənd",
+    "şək",
+    "cədv",
+    "nömr",
+    # Azerbaijani month abbreviations
+    "yan",
+    "fev",
+    "mar",
+    "apr",
+    "may",
+    "iyn",
+    "iyl",
+    "avq",
+    "sen",
+    "okt",
+    "noy",
+    "dek",
+    # English fallbacks in mixed-language corpora
     "mr",
     "mrs",
     "ms",
-    "dr",
-    "prof",
     "sr",
     "jr",
     "st",
@@ -25,8 +53,6 @@ ABBREV_SET = {
     "etc",
     "jan",
     "feb",
-    "mar",
-    "apr",
     "jun",
     "jul",
     "aug",
@@ -46,7 +72,13 @@ def extract_dot_examples(
     labels: List[int] = []
     doc_count = 0
 
-    eos_re = re.compile(r"^\s*[\"'â€œâ€â€˜â€™\)\]]*\s*[A-ZÆÃ–ÃœÄ°Ã‡ÄžÅž]")
+    # Sentence-start cue for Azerbaijani/Latin text after punctuation/quotes.
+    eos_re = re.compile(
+        r"^\s*[\u201c\u201d\u2018\u2019\"'\)\]\}\u00bb\u203a]*\s*[A-ZƏÖÜİÇĞŞ]"
+    )
+    lower_init_re = re.compile(
+        r"^\s*[\u201c\u201d\u2018\u2019\"'\(\[\{\u00ab\u2039]*\s*[a-zəöüğışç]"
+    )
     decimal_re = re.compile(r"^\d\.\d$")
 
     with corpus_path.open("r", encoding="utf-8", errors="ignore") as f:
@@ -69,24 +101,43 @@ def extract_dot_examples(
                 next_tok = next_match.group(1) if next_match else ""
 
                 around = text[max(0, i - 1) : min(len(text), i + 2)]
+                right_stripped = right.strip()
+                prev_tok_l = prev_tok.lower()
+                next_initial = next_tok[:1]
+
                 if decimal_re.match(around):
                     y = 0
-                elif right.strip() == "":
+                elif right_stripped == "":
                     y = 1
+                elif prev_tok_l in ABBREV_SET:
+                    y = 0
+                elif (
+                    len(prev_tok) == 1
+                    and prev_tok.isupper()
+                    and bool(next_initial)
+                    and next_initial.isupper()
+                ):
+                    y = 0
+                elif lower_init_re.match(right):
+                    y = 0
                 else:
                     y = 1 if eos_re.match(right) else 0
 
                 feat: Dict[str, float | str] = {
-                    "prev_tok": prev_tok.lower(),
+                    "prev_tok": prev_tok_l,
                     "next_tok": next_tok.lower(),
                     "prev_len": float(len(prev_tok)),
                     "next_len": float(len(next_tok)),
                     "prev_is_upper": float(prev_tok.isupper() and bool(prev_tok)),
-                    "next_is_upper_init": float(bool(next_tok[:1].isupper())),
+                    "next_is_upper_init": float(bool(next_initial.isupper())),
+                    "next_is_lower_init": float(bool(next_initial.islower())),
                     "prev_is_digit": float(prev_tok.isdigit() and bool(prev_tok)),
                     "next_is_digit": float(next_tok.isdigit() and bool(next_tok)),
-                    "prev_is_abbrev": float(prev_tok.lower() in ABBREV_SET),
+                    "prev_is_abbrev": float(prev_tok_l in ABBREV_SET),
                     "prev_short": float(len(prev_tok) <= 3 and bool(prev_tok)),
+                    "prev_is_single_upper": float(
+                        len(prev_tok) == 1 and prev_tok.isupper()
+                    ),
                 }
                 examples.append(feat)
                 labels.append(y)
@@ -114,7 +165,7 @@ def vectorize_dot_features(
         tok: i for i, (tok, _c) in enumerate(next_counts.most_common(max_vocab_tokens // 2))
     }
 
-    n_num = 8
+    n_num = 10
     off_prev = n_num
     off_next = n_num + len(prev_vocab)
     d = n_num + len(prev_vocab) + len(next_vocab)
@@ -125,10 +176,12 @@ def vectorize_dot_features(
         x[i, 1] = float(f["next_len"])
         x[i, 2] = float(f["prev_is_upper"])
         x[i, 3] = float(f["next_is_upper_init"])
-        x[i, 4] = float(f["prev_is_digit"])
-        x[i, 5] = float(f["next_is_digit"])
-        x[i, 6] = float(f["prev_is_abbrev"])
-        x[i, 7] = float(f["prev_short"])
+        x[i, 4] = float(f["next_is_lower_init"])
+        x[i, 5] = float(f["prev_is_digit"])
+        x[i, 6] = float(f["next_is_digit"])
+        x[i, 7] = float(f["prev_is_abbrev"])
+        x[i, 8] = float(f["prev_short"])
+        x[i, 9] = float(f["prev_is_single_upper"])
 
         p = prev_vocab.get(str(f["prev_tok"]))
         if p is not None:

@@ -1,0 +1,215 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+
+\title{Task 4: Dot-as-Sentence-Boundary Detection}
+\author{NLP Project 2}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Goal}
+Task 4 solves a binary classification problem:
+\begin{itemize}[leftmargin=*]
+\item Input: one dot character ``.'' in context.
+\item Output: whether this dot is a sentence boundary.
+\item Label convention: \(1\) means sentence boundary, \(0\) means not a boundary.
+\end{itemize}
+
+The implementation is in \texttt{core/sentence\_boundary\_task.py}, executed by \texttt{Task4/run\_task4.py}.
+
+\section{Pipeline Overview}
+The end-to-end flow is:
+\begin{enumerate}[leftmargin=*]
+\item Read corpus lines and extract one training instance per dot.
+\item Build weak labels from heuristics around each dot.
+\item Convert features to a numeric matrix.
+\item Split into train/dev/test sets.
+\item Train Logistic Regression with L2 and L1 regularization.
+\item Tune decision threshold on dev set.
+\item Evaluate on test set (accuracy and F1), compare models with McNemar exact test.
+\end{enumerate}
+
+\section{Data Extraction and Weak Labeling}
+\subsection{Input Sampling}
+The function \texttt{extract\_dot\_examples(...)} reads \texttt{Corpora/News/corpus.txt}. Each non-empty line is treated as one document candidate. Two caps control runtime and memory:
+\begin{itemize}[leftmargin=*]
+\item \texttt{max\_docs}: maximum number of non-empty lines processed.
+\item \texttt{max\_examples}: maximum number of dot instances extracted.
+\end{itemize}
+
+\subsection{Instance Construction}
+For every dot position in a line:
+\begin{itemize}[leftmargin=*]
+\item \texttt{prev\_tok}: word immediately to the left of the dot.
+\item \texttt{next\_tok}: word immediately to the right of the dot.
+\end{itemize}
+
+\subsection{Weak Label Heuristics}
+Labels are generated automatically (no manual annotation):
+\begin{enumerate}[leftmargin=*]
+\item If the local pattern is digit-dot-digit (for example \texttt{3.1}), label \(y=0\).
+\item Else if the right side is empty (dot at end of line), label \(y=1\).
+\item Else if the left token is in the abbreviation set, label \(y=0\).
+\item Else if the dot is likely part of initials (single uppercase letter followed by uppercase start), label \(y=0\).
+\item Else if right context starts with lowercase letter, label \(y=0\).
+\item Otherwise, label \(y=1\) when right context starts with optional closing punctuation/quotes followed by an uppercase letter; otherwise \(y=0\).
+\end{enumerate}
+
+This creates a silver-standard dataset suitable for supervised training.
+
+\section{Feature Engineering}
+\subsection{Numeric Features}
+Ten numeric/binary features are used:
+\begin{enumerate}[leftmargin=*]
+\item \texttt{prev\_len}
+\item \texttt{next\_len}
+\item \texttt{prev\_is\_upper}
+\item \texttt{next\_is\_upper\_init}
+\item \texttt{next\_is\_lower\_init}
+\item \texttt{prev\_is\_digit}
+\item \texttt{next\_is\_digit}
+\item \texttt{prev\_is\_abbrev} (from predefined abbreviation set)
+\item \texttt{prev\_short} (length \(\le 3\))
+\item \texttt{prev\_is\_single\_upper}
+\end{enumerate}
+
+\subsection{Token Features}
+Two one-hot vocabularies are built:
+\begin{itemize}[leftmargin=*]
+\item previous-token vocabulary from frequent \texttt{prev\_tok}
+\item next-token vocabulary from frequent \texttt{next\_tok}
+\end{itemize}
+
+The cap \texttt{max\_vocab\_tokens} is split across both sides (approximately half-half). Final feature size:
+\[
+d = 10 + |V_{\text{prev}}| + |V_{\text{next}}|
+\]
+
+Feature matrix \(X \in \mathbb{R}^{N \times d}\) is stored as \texttt{float32}. Length features are clipped to \([0, 30]\) for stability.
+
+\section{Train/Dev/Test Split}
+Data is shuffled with seed \(42\), then split as:
+\begin{itemize}[leftmargin=*]
+\item test ratio \(=0.2\)
+\item dev ratio inside remaining train pool \(=0.1\)
+\end{itemize}
+
+Effective global ratios are approximately:
+\[
+72\% \text{ train},\; 8\% \text{ dev},\; 20\% \text{ test}
+\]
+
+\section{Model: Logistic Regression}
+Implementation is \texttt{core/ml.py::LogisticBinary}.
+
+For sample \(i\), predicted probability is:
+\[
+p_i = \sigma(x_i^\top w + b), \quad \sigma(z)=\frac{1}{1+e^{-z}}
+\]
+
+Training uses full-batch gradient descent for a fixed number of epochs.
+
+\subsection{L2 Regularization}
+\[
+\nabla_w = \frac{1}{N}X^\top(p-y) + \lambda w
+\]
+
+\subsection{L1 Regularization}
+After gradient step, weights are soft-thresholded (proximal shrinkage):
+\[
+w \leftarrow \operatorname{sign}(w)\max(|w|-\eta\lambda, 0)
+\]
+where \(\eta\) is learning rate and \(\lambda\) is regularization strength.
+
+\section{Threshold Selection}
+Instead of fixed \(0.5\), threshold is tuned on dev set by scanning:
+\[
+0.35, 0.36, \dots, 0.80
+\]
+The threshold with highest dev accuracy is selected and then applied to test probabilities.
+
+\section{Evaluation}
+\subsection{Metrics}
+\texttt{classification\_metrics(...)} reports:
+\begin{itemize}[leftmargin=*]
+\item Accuracy
+\item Precision
+\item Recall
+\item F1
+\end{itemize}
+
+Task 4 summary reports include:
+\begin{itemize}[leftmargin=*]
+\item dev accuracy and chosen threshold per model
+\item test accuracy and F1 for L2 and L1
+\item majority-class baseline test accuracy
+\item McNemar exact \(p\)-value (\texttt{p\_l2\_vs\_l1}) for significance of prediction differences
+\end{itemize}
+
+\section{Memory Robustness in \texttt{run\_task4}}
+If vectorization raises an array memory error, Task 4 automatically retries with reduced size:
+\begin{itemize}[leftmargin=*]
+\item halve number of examples (down to minimum \(8000\))
+\item halve vocab cap (down to minimum \(1000\))
+\end{itemize}
+This keeps the task runnable on lower-memory machines.
+
+\section{Hyperparameter Tuning Script}
+\texttt{Task4/tune\_task4.py} runs a small grid search.
+
+\subsection{Current Search Space}
+\begin{itemize}[leftmargin=*]
+\item L2 grid: \((lr, epochs, reg) \in \{(0.1,20,5e-4),(0.1,40,1e-4),(0.2,40,1e-4)\}\)
+\item L1 grid: \((lr, epochs, reg) \in \{(0.1,20,1e-4),(0.1,40,1e-4),(0.2,40,1e-4)\}\)
+\end{itemize}
+
+For each config, it trains, tunes threshold on dev, and records dev/test metrics.
+
+\subsection{Selection Rule}
+Best config inside each regularization family is selected by:
+\[
+(\text{dev accuracy}, \text{dev F1})
+\]
+Then an overall winner (\texttt{best\_overall}) is selected between best L1 and best L2 by the same dev-first rule.
+
+\section{How to Run}
+\subsection{Run Task 4 with fixed parameters}
+\begin{verbatim}
+python Task4/run_task4.py --news-path Corpora/News/corpus.txt
+\end{verbatim}
+
+\subsection{Run tuning}
+\begin{verbatim}
+python Task4/tune_task4.py --news-path Corpora/News/corpus.txt \
+  --save-json Task4/tuning_results.json
+\end{verbatim}
+
+Lower-resource version:
+\begin{verbatim}
+python Task4/tune_task4.py --max-docs 20000 --max-examples 30000 \
+  --max-vocab-tokens 4000 --save-json Task4/tuning_results.json
+\end{verbatim}
+
+\section{What To Do After Tuning}
+\begin{enumerate}[leftmargin=*]
+\item Open \texttt{Task4/tuning\_results.json}.
+\item Read \texttt{best\_overall} for final \(lr\), \(epochs\), \(reg\_strength\), threshold, and \texttt{reg\_type}.
+\item Apply these hyperparameters in \texttt{core/sentence\_boundary\_task.py::run\_task4}.
+\item Re-run \texttt{Task4/run\_task4.py} to produce final report metrics.
+\item In your write-up, report both dev and test metrics, plus McNemar \(p\)-value and majority baseline.
+\end{enumerate}
+
+\section{Notes and Limitations}
+\begin{itemize}[leftmargin=*]
+\item Labels are heuristic, not gold annotations; they include noise.
+\item Features are local around the dot; long-range discourse cues are not modeled.
+\item Grid search is narrow; performance can improve with broader search.
+\item Token one-hot features are dense in memory; sparse representation could scale better.
+\end{itemize}
+
+\end{document}
