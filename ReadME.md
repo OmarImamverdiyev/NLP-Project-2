@@ -110,6 +110,16 @@ python assignment_tasks.py
 python Task4/tune_task4.py
 ```
 
+Save results
+```powershell
+python Task4/tune_task4.py --news-path Corpora/News/corpus.txt --save-json Task4/tuning_results.json
+```
+
+Save results (smaller version)
+```powershell
+python Task4/tune_task4.py --max-docs 20000 --max-examples 30000 --max-vocab-tokens 4000 --save-json Task4/tuning_results.json
+```
+
 Optional save:
 
 ```powershell
