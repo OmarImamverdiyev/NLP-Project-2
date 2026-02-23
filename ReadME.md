@@ -125,3 +125,5 @@ Optional save:
 ```powershell
 python Task4/tune_task4.py --save-json Task4/tuning_results.json
 ```
+
+python Task4/tune_task4.py --search-mode extended --save-json Task4/tuning_results.json
