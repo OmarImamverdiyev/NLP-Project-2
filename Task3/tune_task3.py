@@ -18,6 +18,9 @@ from core.ml import BernoulliNB, LogisticBinary, MultinomialNB, classification_m
 from core.paths import SEED, SENTIMENT_DATASET_PATH
 from core.sentiment_task import (
     SKLEARN_AVAILABLE,
+    TASK3_CUSTOM_MAX_SAMPLES_DEFAULT,
+    _normalize_task3_max_samples,
+    _stratified_sample_indices,
     build_vocab_for_classification,
     load_sentiment_dataset,
     sentiment_lexicon_binary_features,
@@ -543,16 +546,36 @@ def main() -> None:
     parser.add_argument("--max-features", type=int, default=30000)
     parser.add_argument("--min-vocab-freq", type=int, default=2)
     parser.add_argument("--max-vocab", type=int, default=20000)
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help=(
+            "Cap total tuning dataset size before train/dev/test split. "
+            f"Default is {TASK3_CUSTOM_MAX_SAMPLES_DEFAULT} when sklearn is unavailable; "
+            "otherwise uses full dataset. Set <=0 to disable cap."
+        ),
+    )
     parser.add_argument("--save-json", type=Path, default=None)
     args = parser.parse_args()
 
     texts, labels, data_source = load_sentiment_dataset(args.dataset_path)
+    original_num_samples = len(texts)
+    effective_max_samples = _normalize_task3_max_samples(args.max_samples)
+
     if len(texts) < 500:
         raise RuntimeError(f"Not enough sentiment samples in dataset: {len(texts)} ({data_source})")
 
     y = np.array(labels, dtype=np.int64)
     if len(np.unique(y)) < 2:
         raise RuntimeError("Dataset must contain both positive and negative classes.")
+
+    sampled_for_memory = 0.0
+    if effective_max_samples is not None and len(texts) > effective_max_samples:
+        sample_idx = _stratified_sample_indices(y, effective_max_samples)
+        texts = [texts[int(i)] for i in sample_idx.tolist()]
+        y = y[sample_idx]
+        sampled_for_memory = 1.0
 
     if args.search_mode == "quick":
         default_mnb_alphas = [0.1, 0.5, 1.0]
@@ -602,7 +625,13 @@ def main() -> None:
 
     print(f"dataset={args.dataset_path}")
     print(f"data_source={data_source}")
-    print(f"samples={len(texts)} positive_ratio={float(y.mean()):.6f}")
+    print(
+        f"samples={len(texts)} "
+        f"(original={original_num_samples}, "
+        f"sampled_for_memory={int(sampled_for_memory)}, "
+        f"max_samples={effective_max_samples if effective_max_samples is not None else 'none'}) "
+        f"positive_ratio={float(y.mean()):.6f}"
+    )
     print(f"backend={'sklearn' if SKLEARN_AVAILABLE else 'custom'}")
     print(f"search_mode={args.search_mode} selection_metric={args.selection_metric}")
 
@@ -639,6 +668,12 @@ def main() -> None:
 
     payload["dataset_path"] = str(args.dataset_path)
     payload["data_source"] = data_source
+    payload["num_samples"] = int(len(texts))
+    payload["num_samples_original"] = int(original_num_samples)
+    payload["sampled_for_memory"] = sampled_for_memory
+    payload["task3_max_samples"] = (
+        float(effective_max_samples) if effective_max_samples is not None else -1.0
+    )
 
     print("\nBest configs")
     print(f"MNB: {fmt_result(payload['best_mnb'])}")

@@ -145,8 +145,17 @@ python Task4/tune_task4.py --search-mode extended --save-json Task4/tuning_resul
 python Task3/tune_task3.py
 ```
 
+Memory-friendly tuning on a smaller subset:
+
+```powershell
+python Task3/tune_task3.py --max-samples 10000
+```
+
 Optional save:
 
 ```powershell
 python Task3/tune_task3.py --search-mode extended --save-json Task3/tuning_results.json
 ```
+
+Task 3 tuning uses a stratified train/dev/test workflow (dev for model selection, test for final report).  
+When `--max-samples` is used, sampling is stratified and deterministic with seed `42`, so repeated runs with the same arguments are stable.
