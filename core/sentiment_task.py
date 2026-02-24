@@ -34,6 +34,8 @@ except Exception:
 random.seed(SEED)
 np.random.seed(SEED)
 
+TASK3_CUSTOM_MAX_SAMPLES_DEFAULT = 5000
+
 
 AZ_POSITIVE = {
     "yaxsi",
@@ -290,6 +292,88 @@ def _stratified_split_indices(y: np.ndarray, test_ratio: float = 0.2) -> Tuple[n
     rng.shuffle(train_idx)
     rng.shuffle(test_idx)
     return train_idx, test_idx
+
+
+def _normalize_task3_max_samples(max_samples: int | None) -> int | None:
+    if max_samples is None:
+        if SKLEARN_AVAILABLE:
+            return None
+        return TASK3_CUSTOM_MAX_SAMPLES_DEFAULT
+    if max_samples <= 0:
+        return None
+    return int(max_samples)
+
+
+def _stratified_sample_indices(y: np.ndarray, max_samples: int) -> np.ndarray:
+    total = int(len(y))
+    if max_samples >= total:
+        return np.arange(total, dtype=np.int64)
+
+    rng = np.random.default_rng(SEED)
+    classes, counts = np.unique(y, return_counts=True)
+    raw_targets = (counts.astype(np.float64) / float(total)) * float(max_samples)
+    targets = np.floor(raw_targets).astype(np.int64)
+    targets = np.minimum(targets, counts)
+
+    if max_samples >= len(classes):
+        targets = np.maximum(targets, 1)
+        targets = np.minimum(targets, counts)
+
+    while int(targets.sum()) < max_samples:
+        deficits = counts - targets
+        candidates = np.where(deficits > 0)[0]
+        if len(candidates) == 0:
+            break
+        ranked = sorted(
+            candidates.tolist(),
+            key=lambda i: (raw_targets[i] - targets[i], deficits[i]),
+            reverse=True,
+        )
+        grew = False
+        for idx in ranked:
+            if targets[idx] < counts[idx]:
+                targets[idx] += 1
+                grew = True
+                if int(targets.sum()) >= max_samples:
+                    break
+        if not grew:
+            break
+
+    while int(targets.sum()) > max_samples:
+        if max_samples >= len(classes):
+            reducible = np.where(targets > 1)[0]
+        else:
+            reducible = np.where(targets > 0)[0]
+        if len(reducible) == 0:
+            break
+        idx = int(reducible[np.argmax(targets[reducible])])
+        targets[idx] -= 1
+
+    sampled_parts: List[np.ndarray] = []
+    for cls, take in zip(classes.tolist(), targets.tolist()):
+        if take <= 0:
+            continue
+        cls_idx = np.where(y == cls)[0]
+        rng.shuffle(cls_idx)
+        sampled_parts.append(cls_idx[:take])
+
+    if not sampled_parts:
+        return np.arange(total, dtype=np.int64)
+
+    sampled_idx = np.concatenate(sampled_parts).astype(np.int64, copy=False)
+    rng.shuffle(sampled_idx)
+
+    if len(sampled_idx) > max_samples:
+        sampled_idx = sampled_idx[:max_samples]
+    elif len(sampled_idx) < max_samples:
+        chosen = np.zeros(total, dtype=bool)
+        chosen[sampled_idx] = True
+        remaining = np.where(~chosen)[0]
+        rng.shuffle(remaining)
+        need = max_samples - len(sampled_idx)
+        sampled_idx = np.concatenate([sampled_idx, remaining[:need]])
+
+    return sampled_idx
 
 
 def _best_alpha_custom(
@@ -597,13 +681,29 @@ def _run_task3_custom(
     }
 
 
-def run_task3(root: Path) -> Dict[str, object]:
+def run_task3(root: Path, max_samples: int | None = None) -> Dict[str, object]:
     dataset_path = sentiment_dataset_path_from_root(root)
     texts, labels, data_source = load_sentiment_dataset(dataset_path)
+    original_num_samples = len(texts)
+    effective_max_samples = _normalize_task3_max_samples(max_samples)
+    sampled_for_memory = 0.0
+
+    if effective_max_samples is not None and len(texts) > effective_max_samples:
+        y_all = np.array(labels, dtype=np.int64)
+        sample_idx = _stratified_sample_indices(y_all, effective_max_samples)
+        texts = [texts[int(i)] for i in sample_idx.tolist()]
+        labels = [int(y_all[int(i)]) for i in sample_idx.tolist()]
+        sampled_for_memory = 1.0
+
     if len(texts) < 500:
         return {
             "error": 1.0,
             "num_samples": float(len(texts)),
+            "num_samples_original": float(original_num_samples),
+            "sampled_for_memory": sampled_for_memory,
+            "task3_max_samples": (
+                float(effective_max_samples) if effective_max_samples is not None else -1.0
+            ),
             "data_source": data_source,
             "dataset_path": str(dataset_path),
         }
@@ -613,6 +713,11 @@ def run_task3(root: Path) -> Dict[str, object]:
         return {
             "error": 1.0,
             "num_samples": float(len(texts)),
+            "num_samples_original": float(original_num_samples),
+            "sampled_for_memory": sampled_for_memory,
+            "task3_max_samples": (
+                float(effective_max_samples) if effective_max_samples is not None else -1.0
+            ),
             "data_source": data_source,
             "dataset_path": str(dataset_path),
         }
@@ -622,5 +727,10 @@ def run_task3(root: Path) -> Dict[str, object]:
     else:
         metrics = _run_task3_custom(texts, y, data_source)
     metrics["uses_only_sentiment_dataset"] = 1.0
+    metrics["num_samples_original"] = float(original_num_samples)
+    metrics["sampled_for_memory"] = sampled_for_memory
+    metrics["task3_max_samples"] = (
+        float(effective_max_samples) if effective_max_samples is not None else -1.0
+    )
     metrics["dataset_path"] = str(dataset_path)
     return metrics

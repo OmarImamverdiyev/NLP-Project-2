@@ -18,9 +18,18 @@ def main() -> None:
         description="Run Task 3 (NB/Binary NB/Logistic sentiment classification)"
     )
     parser.add_argument("--root", type=Path, default=ROOT)
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help=(
+            "Cap dataset size for Task 3. Default is 5000 when sklearn is unavailable; "
+            "otherwise uses full dataset. Set <=0 to disable cap."
+        ),
+    )
     args = parser.parse_args()
 
-    metrics = run_task3(args.root)
+    metrics = run_task3(args.root, max_samples=args.max_samples)
     print_section("Task 3", metrics)
 
 

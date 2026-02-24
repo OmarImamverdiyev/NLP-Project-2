@@ -42,6 +42,14 @@ Task 3:
 python Task3/run_task3.py --root .
 ```
 
+If Task 3 runs out of memory, cap the dataset size:
+
+```powershell
+python Task3/run_task3.py --max-samples 5000
+```
+
+Note: when `sklearn` is not available, Task 3 now defaults to `5000` samples to avoid dense-matrix memory errors.
+
 Task 4:
 
 ```powershell
