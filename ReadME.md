@@ -6,7 +6,7 @@ The sections below map each task number to the files that implement it and what 
 Datasets:
 1. https://drive.google.com/drive/folders/1zPD4m9aAH4JH1urBDdPm4RBkOWXLnVt4?usp=sharing
 2. https://github.com/AzTextCorpus/az-sentiment-analysis-dataset
-3. https://drive.google.com/file/d/1-uEH72U_oDzj36H6gvBvvq2fVMuB6gNX/view?usp=drive_link
+3. https://drive.google.com/file/d/1-uEH72U_oDzj36H6gvBvvq2fVMuB6gNX/view?usp=drive_link 
 
 ### Run tasks separately
 
@@ -43,21 +43,13 @@ Task 3:
 python Task3/run_task3.py --root .
 ```
 
-Run Task 3 explicitly on the reduced dataset:
-
-```powershell
-python Task3/run_task3.py --dataset-path sentiment_dataset/dataset_v1.csv
-```
-
 If Task 3 runs out of memory, cap the dataset size:
 
 ```powershell
 python Task3/run_task3.py --max-samples 5000
 ```
 
-Note: `run_task3.py` now defaults to `sentiment_dataset/dataset_v1.csv` when present (otherwise `dataset.csv`).  
-It uses a stratified train/dev/test split by default (`test_ratio=0.2`, `dev_ratio_within_train=0.2`).
-When `sklearn` is not available, Task 3 defaults to `5000` samples to avoid dense-matrix memory errors.
+Note: when `sklearn` is not available, Task 3 now defaults to `5000` samples to avoid dense-matrix memory errors.
 
 Task 4:
 
@@ -89,10 +81,10 @@ python Task4/run_task4.py --max-docs 20000 --max-examples 30000 --max-vocab-toke
 
 #### Task 3: Sentiment classification
 - `Task3/run_task3.py`: Task 3 CLI entry point.
-- `core/sentiment_task.py` (`run_task3`): Loads `sentiment_dataset/dataset_v1.csv` when available (else `dataset.csv`), creates BoW and lexicon features, trains Multinomial NB, Bernoulli NB, and Logistic Regression, and reports dev/test metrics plus McNemar tests.
+- `core/sentiment_task.py` (`run_task3`): Loads only `sentiment_dataset/dataset.csv`, creates BoW and lexicon features, trains Multinomial NB, Bernoulli NB, and Logistic Regression, and reports metrics plus McNemar tests.
 - `core/ml.py`: Contains model implementations and evaluation/statistical testing utilities.
 - `core/text_utils.py`: Tokenization utilities for feature construction.
-- `core/paths.py`: Defines default sentiment dataset path (prefers `sentiment_dataset/dataset_v1.csv`, falls back to `sentiment_dataset/dataset.csv`).
+- `core/paths.py`: Defines default sentiment dataset path (`sentiment_dataset/dataset.csv`).
 
 #### Task 4: Dot-as-sentence-boundary detection
 - `Task4/run_task4.py`: Task 4 CLI entry point.
@@ -104,7 +96,7 @@ python Task4/run_task4.py --max-docs 20000 --max-examples 30000 --max-vocab-toke
 ### Train/dev/test splitting
 
 - Task 1 and Task 2 split news sentences into train/dev/test = 80%/10%/10% in `core/language_modeling.py` (`train_dev_test_split`).
-- Task 3 uses stratified train/dev/test splits in `core/sentiment_task.py` and `Task3/tune_task3.py`: test is 20% of all data; dev is 20% of the remaining train pool (overall 64%/16%/20%).
+- Task 3 uses a stratified train/test split of 80%/20% in `core/sentiment_task.py`.
 - Task 4 uses train/dev/test = 72%/8%/20% in `core/sentence_boundary_task.py` (`split_train_dev_test_xy` with test ratio 0.2 and dev as 10% of the remaining train pool).
 - Splits are randomized with seed `42` defined in `core/paths.py`.
 
@@ -160,11 +152,11 @@ Memory-friendly tuning on a smaller subset:
 python Task3/tune_task3.py --max-samples 10000
 ```
 
-Run tuning explicitly on the reduced dataset:
-
 ```powershell
-python Task3/tune_task3.py --dataset-path sentiment_dataset/dataset_v1.csv
+python Task3/run_task3.py --dataset-path sentiment_dataset/dataset_v1.csv --max-samples 0
 ```
+
+python Task3/tune_task3.py --dataset-path sentiment_dataset/dataset_v1.csv --max-samples 0
 
 Optional save:
 
@@ -172,5 +164,5 @@ Optional save:
 python Task3/tune_task3.py --search-mode extended --save-json Task3/tuning_results.json
 ```
 
-Task 3 tuning defaults to `sentiment_dataset/dataset_v1.csv` when present (else `dataset.csv`) and uses a stratified train/dev/test workflow (dev for model selection, test for final report).  
+Task 3 tuning uses a stratified train/dev/test workflow (dev for model selection, test for final report).  
 When `--max-samples` is used, sampling is stratified and deterministic with seed `42`, so repeated runs with the same arguments are stable.
