@@ -3,11 +3,7 @@
 This repository supports running each assignment task independently.
 The sections below map each task number to the files that implement it and what they do.
 
-Datasets:
-1. https://drive.google.com/drive/folders/1zPD4m9aAH4JH1urBDdPm4RBkOWXLnVt4?usp=sharing
-2. https://github.com/AzTextCorpus/az-sentiment-analysis-dataset
-3. https://drive.google.com/file/d/1-uEH72U_oDzj36H6gvBvvq2fVMuB6gNX/view?usp=drive_link 
-
+ 
 ### Run tasks separately
 
 ```powershell
@@ -27,6 +23,20 @@ The UI lets you:
 - run Task 1, Task 2, Task 3, Task 4 individually, or run all tasks together;
 - adjust key parameters (`max-sentences`, `min-freq`, Task 4 caps, paths);
 - view each task's metrics in separate tabs.
+
+### Run localhost web UI (results + simple demos)
+
+```powershell
+streamlit run localhost_ui.py
+```
+
+Then open `http://localhost:8501`.
+
+This web UI includes:
+- Results tab for Task 1-4 metrics (individual run buttons + run-all);
+- Unigram/Bigram tab to test a custom sentence and view perplexity/probabilities;
+- Sentiment tab to classify your own text with a lightweight demo model;
+- Sentence Boundary tab to test dot (`.`) boundary predictions on custom text.
 
 ### Optional arguments
 

@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from core.ml import LogisticBinary, classification_metrics
 from core.paths import NEWS_CORPUS_PATH, SEED
 from core.sentence_boundary_task import (
+    extract_dot_examples_from_labeled_csv,
     extract_dot_examples,
     select_best_threshold_by_accuracy,
     split_train_dev_test_xy,
@@ -146,6 +147,12 @@ def main() -> None:
         description="Tune Task 4 Logistic Regression settings using a train/dev/test split."
     )
     parser.add_argument("--news-path", type=Path, default=NEWS_CORPUS_PATH)
+    parser.add_argument(
+        "--labeled-csv",
+        type=Path,
+        default=None,
+        help="Optional labeled dot dataset CSV. If provided, news corpus is ignored.",
+    )
     parser.add_argument("--max-docs", type=int, default=30000)
     parser.add_argument("--max-examples", type=int, default=60000)
     parser.add_argument("--max-vocab-tokens", type=int, default=6000)
@@ -196,14 +203,24 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not args.news_path.exists():
-        raise FileNotFoundError(f"News corpus not found: {args.news_path}")
+    if args.labeled_csv is not None:
+        if not args.labeled_csv.exists():
+            raise FileNotFoundError(f"Labeled CSV not found: {args.labeled_csv}")
+        feats, y = extract_dot_examples_from_labeled_csv(
+            args.labeled_csv,
+            max_examples=args.max_examples,
+        )
+        source_name = str(args.labeled_csv)
+    else:
+        if not args.news_path.exists():
+            raise FileNotFoundError(f"News corpus not found: {args.news_path}")
+        feats, y = extract_dot_examples(
+            args.news_path,
+            max_docs=args.max_docs,
+            max_examples=args.max_examples,
+        )
+        source_name = str(args.news_path)
 
-    feats, y = extract_dot_examples(
-        args.news_path,
-        max_docs=args.max_docs,
-        max_examples=args.max_examples,
-    )
     if len(y) < 1000:
         raise RuntimeError(f"Not enough examples for tuning: {len(y)}")
 
@@ -221,6 +238,7 @@ def main() -> None:
     )
 
     print("Split sizes:")
+    print(f"data_source={source_name}")
     print(f"train={len(ytr)} dev={len(ydv)} test={len(yte)}")
     print(f"class_positive_ratio={float(y.mean()):.6f}")
 

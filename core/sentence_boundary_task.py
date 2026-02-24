@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import re
 from collections import Counter
 from pathlib import Path
@@ -148,6 +149,77 @@ def extract_dot_examples(
     return examples, np.array(labels, dtype=np.int64)
 
 
+def _parse_task4_label(raw: str) -> int | None:
+    token = (raw or "").strip().lower()
+    if token in {"1", "true", "yes", "y"}:
+        return 1
+    if token in {"0", "false", "no", "n"}:
+        return 0
+    return None
+
+
+def _safe_float(raw: str, fallback: float) -> float:
+    try:
+        return float((raw or "").strip())
+    except ValueError:
+        return fallback
+
+
+def extract_dot_examples_from_labeled_csv(
+    csv_path: Path,
+    max_examples: int | None = 250000,
+) -> Tuple[List[Dict[str, float | str]], np.ndarray]:
+    examples: List[Dict[str, float | str]] = []
+    labels: List[int] = []
+
+    with csv_path.open("r", encoding="utf-8", errors="ignore", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            return examples, np.array(labels, dtype=np.int64)
+
+        for row in reader:
+            label = _parse_task4_label(row.get("label") or "")
+            if label is None:
+                continue
+
+            prev_tok_raw = (row.get("prev_token") or "").strip()
+            next_tok_raw = (row.get("next_token") or "").strip()
+            prev_tok = prev_tok_raw.lower()
+            next_tok = next_tok_raw.lower()
+            next_initial = next_tok_raw[:1]
+
+            prev_len = _safe_float(row.get("prev_len") or "", float(len(prev_tok_raw)))
+            next_len = _safe_float(row.get("next_len") or "", float(len(next_tok_raw)))
+            is_digit_before = _safe_float(
+                row.get("is_digit_before") or "",
+                1.0 if prev_tok_raw[-1:].isdigit() else 0.0,
+            )
+
+            feat: Dict[str, float | str] = {
+                "prev_tok": prev_tok,
+                "next_tok": next_tok,
+                "prev_len": prev_len,
+                "next_len": next_len,
+                "prev_is_upper": float(prev_tok_raw.isupper() and bool(prev_tok_raw)),
+                "next_is_upper_init": float(bool(next_initial.isupper())),
+                "next_is_lower_init": float(bool(next_initial.islower())),
+                "prev_is_digit": float(bool(is_digit_before) or prev_tok_raw.isdigit()),
+                "next_is_digit": float(next_tok_raw.isdigit() and bool(next_tok_raw)),
+                "prev_is_abbrev": float(prev_tok in ABBREV_SET),
+                "prev_short": float(len(prev_tok_raw) <= 3 and bool(prev_tok_raw)),
+                "prev_is_single_upper": float(
+                    len(prev_tok_raw) == 1 and prev_tok_raw.isupper()
+                ),
+            }
+            examples.append(feat)
+            labels.append(label)
+
+            if max_examples is not None and len(examples) >= max_examples:
+                break
+
+    return examples, np.array(labels, dtype=np.int64)
+
+
 def vectorize_dot_features(
     feats: Sequence[Dict[str, float | str]],
     max_vocab_tokens: int = 40000,
@@ -246,14 +318,26 @@ def select_best_threshold_by_accuracy(
 
 
 def run_task4(
-    news_path: Path,
+    news_path: Path | None = None,
+    labeled_csv_path: Path | None = None,
     max_docs: int | None = 30000,
     max_examples: int | None = 60000,
     max_vocab_tokens: int = 6000,
 ) -> Dict[str, float]:
-    feats, y = extract_dot_examples(news_path, max_docs=max_docs, max_examples=max_examples)
+    if labeled_csv_path is not None:
+        feats, y = extract_dot_examples_from_labeled_csv(
+            labeled_csv_path,
+            max_examples=max_examples,
+        )
+        source_name = str(labeled_csv_path)
+    else:
+        if news_path is None:
+            raise ValueError("news_path is required when labeled_csv_path is not provided.")
+        feats, y = extract_dot_examples(news_path, max_docs=max_docs, max_examples=max_examples)
+        source_name = str(news_path)
+
     if len(y) < 1000:
-        return {"error": 1.0, "num_examples": float(len(y))}
+        return {"error": 1.0, "num_examples": float(len(y)), "data_source": source_name}
 
     cur_n = len(y)
     cur_vocab = max_vocab_tokens
@@ -277,6 +361,7 @@ def run_task4(
                     "num_examples": float(len(y)),
                     "used_examples": float(cur_n),
                     "used_vocab_cap": float(cur_vocab),
+                    "data_source": source_name,
                 }
             cur_n = next_n
             cur_vocab = next_vocab
@@ -312,6 +397,7 @@ def run_task4(
     p_l2_vs_l1 = mcnemar_exact_p(yte, pred_l2, pred_l1)
     majority_baseline_acc = max(float((yte == 1).mean()), float((yte == 0).mean()))
     return {
+        "data_source": source_name,
         "num_examples": float(len(y)),
         "used_examples": float(len(y_work)),
         "used_vocab_cap": float(cur_vocab),
