@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import random
-import re
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
@@ -16,7 +15,7 @@ from core.ml import (
     classification_metrics,
     mcnemar_exact_p,
 )
-from core.paths import SEED, YT_COMMENTS_PATH
+from core.paths import SEED
 from core.text_utils import tokenize_words
 
 try:
@@ -82,122 +81,59 @@ NEGATION_TOKENS = {
     "no",
 }
 
+def sentiment_dataset_path_from_root(root: Path) -> Path:
+    return root / "sentiment_dataset" / "dataset.csv"
 
-def parse_like_count(value: str) -> int:
-    if value is None:
-        return 0
-    value = value.strip().replace(",", "")
+
+def _parse_binary_sentiment_label(raw_value: str) -> int | None:
+    value = raw_value.strip().lower()
     if not value:
-        return 0
-    digits = re.findall(r"\d+", value)
-    if not digits:
+        return None
+    if value in {"1", "positive", "pos", "true", "yes"}:
+        return 1
+    if value in {"0", "-1", "negative", "neg", "false", "no"}:
         return 0
     try:
-        return int(digits[0])
+        return 1 if float(value) > 0 else 0
     except ValueError:
-        return 0
+        return None
 
 
-def build_weak_youtube_sentiment(
-    path: Path,
-    min_samples: int = 2000,
-) -> Tuple[List[str], List[int]]:
+def load_sentiment_dataset(dataset_path: Path) -> Tuple[List[str], List[int], str]:
     texts: List[str] = []
     labels: List[int] = []
 
-    if not path.exists():
-        return texts, labels
+    if not dataset_path.exists():
+        return texts, labels, f"missing:{dataset_path}"
 
-    with path.open("r", encoding="utf-8", errors="ignore", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            text = (row.get("comment_text") or "").strip()
-            if not text:
-                continue
+    text_keys = ("text", "comment_text", "content", "review", "sentence")
+    label_keys = ("label", "sentiment", "polarity", "target", "class")
 
-            toks = tokenize_words(text)
-            if len(toks) < 3:
-                continue
+    try:
+        with dataset_path.open("r", encoding="utf-8", errors="ignore", newline="") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                return [], [], f"invalid_csv_no_header:{dataset_path}"
 
-            pos = sum(1 for t in toks if t in AZ_POSITIVE)
-            neg = sum(1 for t in toks if t in AZ_NEGATIVE)
-            likes = parse_like_count(row.get("comment_likes", "0"))
+            cols = {c.strip().lower(): c for c in reader.fieldnames}
+            text_col = next((cols[k] for k in text_keys if k in cols), None)
+            label_col = next((cols[k] for k in label_keys if k in cols), None)
+            if not text_col or not label_col:
+                return [], [], f"invalid_columns:{dataset_path}"
 
-            if pos > neg:
-                y = 1
-            elif neg > pos:
-                y = 0
-            else:
-                if likes >= 10:
-                    y = 1
-                elif likes == 0:
-                    y = 0
-                else:
+            for row in reader:
+                text = (row.get(text_col) or "").strip()
+                if not text:
                     continue
-
-            texts.append(text)
-            labels.append(y)
-
-    pos_idx = [i for i, y in enumerate(labels) if y == 1]
-    neg_idx = [i for i, y in enumerate(labels) if y == 0]
-    n = min(len(pos_idx), len(neg_idx))
-    n = min(n, max(min_samples // 2, 1000))
-    if n == 0:
-        return [], []
-
-    rng = random.Random(SEED)
-    pos_pick = rng.sample(pos_idx, n) if len(pos_idx) > n else pos_idx
-    neg_pick = rng.sample(neg_idx, n) if len(neg_idx) > n else neg_idx
-    chosen = pos_pick + neg_pick
-    rng.shuffle(chosen)
-    return [texts[i] for i in chosen], [labels[i] for i in chosen]
-
-
-def find_labeled_sentiment_dataset(root: Path) -> Tuple[List[str], List[int], str]:
-    candidates = list(root.rglob("*.csv"))
-    label_keys = {"label", "sentiment", "polarity", "target", "class"}
-    text_keys = {"text", "comment_text", "content", "review", "sentence"}
-
-    for csv_path in candidates:
-        if ".git" in str(csv_path):
-            continue
-        try:
-            with csv_path.open("r", encoding="utf-8", errors="ignore", newline="") as f:
-                reader = csv.DictReader(f)
-                if not reader.fieldnames:
+                label = _parse_binary_sentiment_label(row.get(label_col) or "")
+                if label is None:
                     continue
-                cols = {c.strip().lower(): c for c in reader.fieldnames}
-                lk = next((cols[k] for k in label_keys if k in cols), None)
-                tk = next((cols[k] for k in text_keys if k in cols), None)
-                if not lk or not tk:
-                    continue
+                texts.append(text)
+                labels.append(label)
+    except Exception:
+        return [], [], f"read_error:{dataset_path}"
 
-                texts: List[str] = []
-                labels: List[int] = []
-                for row in reader:
-                    t = (row.get(tk) or "").strip()
-                    y = (row.get(lk) or "").strip().lower()
-                    if not t or not y:
-                        continue
-
-                    if y in {"1", "positive", "pos", "true", "yes"}:
-                        labels.append(1)
-                    elif y in {"0", "-1", "negative", "neg", "false", "no"}:
-                        labels.append(0)
-                    else:
-                        try:
-                            labels.append(1 if float(y) > 0 else 0)
-                        except ValueError:
-                            continue
-                    texts.append(t)
-
-                if len(texts) >= 500 and len(set(labels)) == 2:
-                    return texts, labels, f"labeled_csv:{csv_path}"
-        except Exception:
-            continue
-
-    texts, labels = build_weak_youtube_sentiment(YT_COMMENTS_PATH)
-    return texts, labels, "weak_youtube_distant_supervision"
+    return texts, labels, f"sentiment_dataset:{dataset_path}"
 
 
 def build_vocab_for_classification(
@@ -539,7 +475,7 @@ def _run_task3_sklearn(
         "num_samples": float(len(texts)),
         "positive_ratio": float(y.mean()),
         "num_features_bow": float(len(vectorizer.vocabulary_)),
-        "data_source_code": 0.0 if data_source.startswith("labeled_csv") else 1.0,
+        "data_source_code": 0.0,
         "data_source": data_source,
         "uses_sklearn_models": 1.0,
         "mnb_best_alpha": float(mnb_alpha),
@@ -637,7 +573,7 @@ def _run_task3_custom(
         "num_samples": float(len(texts)),
         "positive_ratio": float(y.mean()),
         "num_features_bow": float(len(vocab)),
-        "data_source_code": 0.0 if data_source.startswith("labeled_csv") else 1.0,
+        "data_source_code": 0.0,
         "data_source": data_source,
         "uses_sklearn_models": 0.0,
         "mnb_best_alpha": float(mnb_alpha),
@@ -662,14 +598,29 @@ def _run_task3_custom(
 
 
 def run_task3(root: Path) -> Dict[str, object]:
-    texts, labels, data_source = find_labeled_sentiment_dataset(root)
+    dataset_path = sentiment_dataset_path_from_root(root)
+    texts, labels, data_source = load_sentiment_dataset(dataset_path)
     if len(texts) < 500:
-        return {"error": 1.0, "num_samples": float(len(texts)), "data_source": data_source}
+        return {
+            "error": 1.0,
+            "num_samples": float(len(texts)),
+            "data_source": data_source,
+            "dataset_path": str(dataset_path),
+        }
 
     y = np.array(labels, dtype=np.int64)
     if len(np.unique(y)) < 2:
-        return {"error": 1.0, "num_samples": float(len(texts)), "data_source": data_source}
+        return {
+            "error": 1.0,
+            "num_samples": float(len(texts)),
+            "data_source": data_source,
+            "dataset_path": str(dataset_path),
+        }
 
     if SKLEARN_AVAILABLE:
-        return _run_task3_sklearn(texts, y, data_source)
-    return _run_task3_custom(texts, y, data_source)
+        metrics = _run_task3_sklearn(texts, y, data_source)
+    else:
+        metrics = _run_task3_custom(texts, y, data_source)
+    metrics["uses_only_sentiment_dataset"] = 1.0
+    metrics["dataset_path"] = str(dataset_path)
+    return metrics

@@ -1,1 +1,5 @@
 Corpora/
+__pycache__/
+
+# Ignore all Python cache folders
+__pycache__/

@@ -230,9 +230,9 @@ def main() -> None:
         default_reg_values = [1e-4, 5e-4]
         default_max_trials = 0
     else:
-        default_lr_values = [0.03, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8]
+        default_lr_values = [0.3, 0.4, 0.5, 0.6]
         default_epoch_values = [20, 30, 40, 60]
-        default_reg_values = [1e-5, 5e-5, 1e-4, 3e-4, 5e-4]
+        default_reg_values = [5e-5, 1e-4, 2e-4, 3e-4]
         default_max_trials = 0
 
     lr_values = parse_float_list(args.lr_values) if args.lr_values is not None else default_lr_values
@@ -250,7 +250,7 @@ def main() -> None:
     max_trials = int(args.max_trials_per_reg)
     if max_trials == 0:
         max_trials = default_max_trials
-    anchor = (0.2, 40, 1e-4)
+    anchor = (0.4, 40, 1e-4)
     l2_grid = build_grid(
         lr_values,
         epoch_values,

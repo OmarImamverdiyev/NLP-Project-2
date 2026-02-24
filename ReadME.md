@@ -69,10 +69,10 @@ python Task4/run_task4.py --max-docs 20000 --max-examples 30000 --max-vocab-toke
 
 #### Task 3: Sentiment classification
 - `Task3/run_task3.py`: Task 3 CLI entry point.
-- `core/sentiment_task.py` (`run_task3`): Finds a labeled dataset (or builds weak labels from YouTube comments), creates BoW and lexicon features, trains Multinomial NB, Bernoulli NB, and Logistic Regression, and reports metrics plus McNemar tests.
+- `core/sentiment_task.py` (`run_task3`): Loads only `sentiment_dataset/dataset.csv`, creates BoW and lexicon features, trains Multinomial NB, Bernoulli NB, and Logistic Regression, and reports metrics plus McNemar tests.
 - `core/ml.py`: Contains model implementations and evaluation/statistical testing utilities.
 - `core/text_utils.py`: Tokenization utilities for feature construction.
-- `core/paths.py`: Defines fallback YouTube comments path (`Corpora/Youtube/youtube_comments.csv`).
+- `core/paths.py`: Defines default sentiment dataset path (`sentiment_dataset/dataset.csv`).
 
 #### Task 4: Dot-as-sentence-boundary detection
 - `Task4/run_task4.py`: Task 4 CLI entry point.
@@ -84,7 +84,7 @@ python Task4/run_task4.py --max-docs 20000 --max-examples 30000 --max-vocab-toke
 ### Train/dev/test splitting
 
 - Task 1 and Task 2 split news sentences into train/dev/test = 80%/10%/10% in `core/language_modeling.py` (`train_dev_test_split`).
-- Task 3 shuffles sentiment samples and uses train/test = 80%/20% in `core/sentiment_task.py` (`n_test = int(len(y) * 0.2)`).
+- Task 3 uses a stratified train/test split of 80%/20% in `core/sentiment_task.py`.
 - Task 4 uses train/dev/test = 72%/8%/20% in `core/sentence_boundary_task.py` (`split_train_dev_test_xy` with test ratio 0.2 and dev as 10% of the remaining train pool).
 - Splits are randomized with seed `42` defined in `core/paths.py`.
 
@@ -95,7 +95,7 @@ python Task4/run_task4.py --max-docs 20000 --max-examples 30000 --max-vocab-toke
 ### Data files relevant to tasks
 
 - `Corpora/News/corpus.txt`: Main input corpus for Task 1, Task 2, and Task 4.
-- `Corpora/Youtube/youtube_comments.csv`: Fallback weak-supervision source for Task 3.
+- `sentiment_dataset/dataset.csv`: Required and only dataset source for Task 3.
 - `Corpora/News/build_corpus.py`, `Corpora/News/content_only.csv`, and files under `Corpora/Youtube/`: Corpus preparation/cleaning assets (useful for data building; not required for normal task execution if corpus files already exist).
 
 ### Run all tasks together
@@ -127,3 +127,15 @@ python Task4/tune_task4.py --save-json Task4/tuning_results.json
 ```
 
 python Task4/tune_task4.py --search-mode extended --save-json Task4/tuning_results.json
+
+### Tune Task 3 (sentiment)
+
+```powershell
+python Task3/tune_task3.py
+```
+
+Optional save:
+
+```powershell
+python Task3/tune_task3.py --search-mode extended --save-json Task3/tuning_results.json
+```
