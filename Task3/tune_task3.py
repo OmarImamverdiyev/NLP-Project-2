@@ -284,7 +284,6 @@ def run_sklearn_tuning(
     for c, class_weight in product(lr_c_values, class_weights):
         model = LogisticRegression(
             C=float(c),
-            penalty="l2",
             solver="liblinear",
             max_iter=3000,
             random_state=SEED,

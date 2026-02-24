@@ -19,6 +19,15 @@ def main() -> None:
     )
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument(
+        "--dataset-path",
+        type=Path,
+        default=None,
+        help=(
+            "Sentiment CSV path. If omitted, uses sentiment_dataset/dataset_v1.csv under --root "
+            "when present; otherwise falls back to sentiment_dataset/dataset.csv."
+        ),
+    )
+    parser.add_argument(
         "--max-samples",
         type=int,
         default=None,
@@ -27,9 +36,17 @@ def main() -> None:
             "otherwise uses full dataset. Set <=0 to disable cap."
         ),
     )
+    parser.add_argument("--test-ratio", type=float, default=0.2)
+    parser.add_argument("--dev-ratio-within-train", type=float, default=0.2)
     args = parser.parse_args()
 
-    metrics = run_task3(args.root, max_samples=args.max_samples)
+    metrics = run_task3(
+        args.root,
+        max_samples=args.max_samples,
+        dataset_path=args.dataset_path,
+        test_ratio=args.test_ratio,
+        dev_ratio_within_train=args.dev_ratio_within_train,
+    )
     print_section("Task 3", metrics)
 
 

@@ -84,6 +84,9 @@ NEGATION_TOKENS = {
 }
 
 def sentiment_dataset_path_from_root(root: Path) -> Path:
+    dataset_v1 = root / "sentiment_dataset" / "dataset_v1.csv"
+    if dataset_v1.exists():
+        return dataset_v1
     return root / "sentiment_dataset" / "dataset.csv"
 
 
@@ -429,13 +432,22 @@ def _run_task3_sklearn(
     texts: Sequence[str],
     y: np.ndarray,
     data_source: str,
+    test_ratio: float = 0.2,
+    dev_ratio_within_train: float = 0.2,
 ) -> Dict[str, object]:
-    x_train_text, x_test_text, y_train, y_test = train_test_split(
+    x_pool_text, x_test_text, y_pool, y_test = train_test_split(
         list(texts),
         y,
-        test_size=0.2,
+        test_size=test_ratio,
         random_state=SEED,
         stratify=y,
+    )
+    x_train_text, x_dev_text, y_train, y_dev = train_test_split(
+        x_pool_text,
+        y_pool,
+        test_size=dev_ratio_within_train,
+        random_state=SEED + 1,
+        stratify=y_pool,
     )
 
     vectorizer = CountVectorizer(
@@ -446,90 +458,96 @@ def _run_task3_sklearn(
         max_features=30000,
     )
     xtr_counts = vectorizer.fit_transform(x_train_text)
+    xdv_counts = vectorizer.transform(x_dev_text)
     xte_counts = vectorizer.transform(x_test_text)
 
     xtr_lex_mnb = sentiment_lexicon_nonnegative_features(x_train_text)
+    xdv_lex_mnb = sentiment_lexicon_nonnegative_features(x_dev_text)
     xte_lex_mnb = sentiment_lexicon_nonnegative_features(x_test_text)
     xtr_lex_lr = sentiment_lexicon_features(x_train_text)
+    xdv_lex_lr = sentiment_lexicon_features(x_dev_text)
     xte_lex_lr = sentiment_lexicon_features(x_test_text)
     xtr_lex_bin = sentiment_lexicon_binary_features(x_train_text)
+    xdv_lex_bin = sentiment_lexicon_binary_features(x_dev_text)
     xte_lex_bin = sentiment_lexicon_binary_features(x_test_text)
 
     xtr_mnb = sparse.hstack([xtr_counts, sparse.csr_matrix(xtr_lex_mnb)], format="csr")
+    xdv_mnb = sparse.hstack([xdv_counts, sparse.csr_matrix(xdv_lex_mnb)], format="csr")
     xte_mnb = sparse.hstack([xte_counts, sparse.csr_matrix(xte_lex_mnb)], format="csr")
 
     xtr_bow_bin = (xtr_counts > 0).astype(np.float32)
+    xdv_bow_bin = (xdv_counts > 0).astype(np.float32)
     xte_bow_bin = (xte_counts > 0).astype(np.float32)
     xtr_bnb = sparse.hstack([xtr_bow_bin, sparse.csr_matrix(xtr_lex_bin)], format="csr")
+    xdv_bnb = sparse.hstack([xdv_bow_bin, sparse.csr_matrix(xdv_lex_bin)], format="csr")
     xte_bnb = sparse.hstack([xte_bow_bin, sparse.csr_matrix(xte_lex_bin)], format="csr")
 
     xtr_lr = sparse.hstack([xtr_counts, sparse.csr_matrix(xtr_lex_lr)], format="csr")
+    xdv_lr = sparse.hstack([xdv_counts, sparse.csr_matrix(xdv_lex_lr)], format="csr")
     xte_lr = sparse.hstack([xte_counts, sparse.csr_matrix(xte_lex_lr)], format="csr")
-
-    cv = _cv_splitter(y_train)
 
     mnb_alpha = 1.0
     bnb_alpha = 1.0
     lr_best_c = 1.0
     lr_best_weight = "none"
-    mnb_cv_score = -1.0
-    bnb_cv_score = -1.0
-    lr_cv_score = -1.0
+    mnb_dev_macro_f1 = float("-inf")
+    bnb_dev_macro_f1 = float("-inf")
+    lr_dev_macro_f1 = float("-inf")
 
-    if cv is not None:
-        mnb_cv_score = float("-inf")
-        for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
-            score = _cv_mean_f1(SkMultinomialNB(alpha=alpha), xtr_mnb, y_train, cv)
-            if score > mnb_cv_score:
-                mnb_cv_score = score
-                mnb_alpha = alpha
+    for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
+        model = SkMultinomialNB(alpha=alpha).fit(xtr_mnb, y_train)
+        pred_dev = model.predict(xdv_mnb).astype(np.int64)
+        score = _macro_f1(y_dev, pred_dev)
+        if score > mnb_dev_macro_f1:
+            mnb_dev_macro_f1 = score
+            mnb_alpha = alpha
 
-        bnb_cv_score = float("-inf")
-        for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
-            score = _cv_mean_f1(
-                SkBernoulliNB(alpha=alpha, binarize=0.0),
-                xtr_bnb,
-                y_train,
-                cv,
-            )
-            if score > bnb_cv_score:
-                bnb_cv_score = score
-                bnb_alpha = alpha
+    for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
+        model = SkBernoulliNB(alpha=alpha, binarize=0.0).fit(xtr_bnb, y_train)
+        pred_dev = model.predict(xdv_bnb).astype(np.int64)
+        score = _macro_f1(y_dev, pred_dev)
+        if score > bnb_dev_macro_f1:
+            bnb_dev_macro_f1 = score
+            bnb_alpha = alpha
 
-        lr_cv_score = float("-inf")
-        for c in (0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0):
-            for class_weight in (None, "balanced"):
-                model = LogisticRegression(
-                    C=c,
-                    penalty="l2",
-                    solver="liblinear",
-                    max_iter=3000,
-                    random_state=SEED,
-                    class_weight=class_weight,
-                )
-                score = _cv_mean_f1(model, xtr_lr, y_train, cv)
-                if score > lr_cv_score:
-                    lr_cv_score = score
-                    lr_best_c = c
-                    lr_best_weight = "balanced" if class_weight == "balanced" else "none"
+    for c in (0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0):
+        for class_weight in (None, "balanced"):
+            model = LogisticRegression(
+                C=c,
+                solver="liblinear",
+                max_iter=3000,
+                random_state=SEED,
+                class_weight=class_weight,
+            ).fit(xtr_lr, y_train)
+            pred_dev = model.predict(xdv_lr).astype(np.int64)
+            score = _macro_f1(y_dev, pred_dev)
+            if score > lr_dev_macro_f1:
+                lr_dev_macro_f1 = score
+                lr_best_c = c
+                lr_best_weight = "balanced" if class_weight == "balanced" else "none"
 
     mnb = SkMultinomialNB(alpha=mnb_alpha).fit(xtr_mnb, y_train)
+    pred_mnb_dev = mnb.predict(xdv_mnb).astype(np.int64)
     pred_mnb = mnb.predict(xte_mnb).astype(np.int64)
+    m_mnb_dev = _metrics_with_macro_f1(y_dev, pred_mnb_dev)
     m_mnb = _metrics_with_macro_f1(y_test, pred_mnb)
 
     bnb = SkBernoulliNB(alpha=bnb_alpha, binarize=0.0).fit(xtr_bnb, y_train)
+    pred_bnb_dev = bnb.predict(xdv_bnb).astype(np.int64)
     pred_bnb = bnb.predict(xte_bnb).astype(np.int64)
+    m_bnb_dev = _metrics_with_macro_f1(y_dev, pred_bnb_dev)
     m_bnb = _metrics_with_macro_f1(y_test, pred_bnb)
 
     lr = LogisticRegression(
         C=lr_best_c,
-        penalty="l2",
         solver="liblinear",
         max_iter=3000,
         random_state=SEED,
         class_weight=None if lr_best_weight == "none" else "balanced",
     ).fit(xtr_lr, y_train)
+    pred_lr_dev = lr.predict(xdv_lr).astype(np.int64)
     pred_lr = lr.predict(xte_lr).astype(np.int64)
+    m_lr_dev = _metrics_with_macro_f1(y_dev, pred_lr_dev)
     m_lr = _metrics_with_macro_f1(y_test, pred_lr)
 
     p_lr_vs_mnb = mcnemar_exact_p(y_test, pred_lr, pred_mnb)
@@ -558,6 +576,9 @@ def _run_task3_sklearn(
     return {
         "num_samples": float(len(texts)),
         "positive_ratio": float(y.mean()),
+        "train_examples": float(len(y_train)),
+        "dev_examples": float(len(y_dev)),
+        "test_examples": float(len(y_test)),
         "num_features_bow": float(len(vectorizer.vocabulary_)),
         "data_source_code": 0.0,
         "data_source": data_source,
@@ -566,9 +587,18 @@ def _run_task3_sklearn(
         "bnb_best_alpha": float(bnb_alpha),
         "lr_best_c": float(lr_best_c),
         "lr_class_weight_balanced": 1.0 if lr_best_weight == "balanced" else 0.0,
-        "mnb_cv_macro_f1": float(mnb_cv_score),
-        "bnb_cv_macro_f1": float(bnb_cv_score),
-        "lr_cv_macro_f1": float(lr_cv_score),
+        "mnb_cv_macro_f1": float(mnb_dev_macro_f1),
+        "bnb_cv_macro_f1": float(bnb_dev_macro_f1),
+        "lr_cv_macro_f1": float(lr_dev_macro_f1),
+        "mnb_dev_accuracy": m_mnb_dev["accuracy"],
+        "mnb_dev_f1": m_mnb_dev["f1"],
+        "mnb_dev_macro_f1": m_mnb_dev["macro_f1"],
+        "bnb_dev_accuracy": m_bnb_dev["accuracy"],
+        "bnb_dev_f1": m_bnb_dev["f1"],
+        "bnb_dev_macro_f1": m_bnb_dev["macro_f1"],
+        "lr_dev_accuracy": m_lr_dev["accuracy"],
+        "lr_dev_f1": m_lr_dev["f1"],
+        "lr_dev_macro_f1": m_lr_dev["macro_f1"],
         "mnb_accuracy": m_mnb["accuracy"],
         "mnb_f1": m_mnb["f1"],
         "mnb_macro_f1": m_mnb["macro_f1"],
@@ -590,49 +620,117 @@ def _run_task3_custom(
     texts: Sequence[str],
     y: np.ndarray,
     data_source: str,
+    test_ratio: float = 0.2,
+    dev_ratio_within_train: float = 0.2,
 ) -> Dict[str, object]:
-    vocab = build_vocab_for_classification(texts, min_freq=2, max_vocab=20000)
-    x_counts = vectorize_bow_counts(texts, vocab)
-    x_binary = vectorize_bow_binary(texts, vocab)
-    x_lex_lr = sentiment_lexicon_features(texts)
-    x_lex_mnb = sentiment_lexicon_nonnegative_features(texts)
-    x_lex_bin = sentiment_lexicon_binary_features(texts)
+    train_pool_idx, test_idx = _stratified_split_indices(y, test_ratio=test_ratio)
+    rel_train_idx, rel_dev_idx = _stratified_split_indices(
+        y[train_pool_idx],
+        test_ratio=dev_ratio_within_train,
+    )
+    train_idx = train_pool_idx[rel_train_idx]
+    dev_idx = train_pool_idx[rel_dev_idx]
 
-    x_counts_lex_mnb = np.hstack([x_counts, x_lex_mnb])
-    x_counts_lex_lr = np.hstack([x_counts, x_lex_lr])
-    x_binary_lex = np.hstack([x_binary, x_lex_bin])
+    x_train_text = [texts[i] for i in train_idx]
+    x_dev_text = [texts[i] for i in dev_idx]
+    x_test_text = [texts[i] for i in test_idx]
+    y_train = y[train_idx]
+    y_dev = y[dev_idx]
+    y_test = y[test_idx]
 
-    train_idx, test_idx = _stratified_split_indices(y, test_ratio=0.2)
-    ytr, yte = y[train_idx], y[test_idx]
+    vocab = build_vocab_for_classification(x_train_text, min_freq=2, max_vocab=20000)
+    xtr_counts = vectorize_bow_counts(x_train_text, vocab)
+    xdv_counts = vectorize_bow_counts(x_dev_text, vocab)
+    xte_counts = vectorize_bow_counts(x_test_text, vocab)
+    xtr_binary = vectorize_bow_binary(x_train_text, vocab)
+    xdv_binary = vectorize_bow_binary(x_dev_text, vocab)
+    xte_binary = vectorize_bow_binary(x_test_text, vocab)
 
-    xtr_mnb, xte_mnb = x_counts_lex_mnb[train_idx], x_counts_lex_mnb[test_idx]
-    xtr_bnb, xte_bnb = x_binary_lex[train_idx], x_binary_lex[test_idx]
-    xtr_lr, xte_lr = x_counts_lex_lr[train_idx], x_counts_lex_lr[test_idx]
+    xtr_lex_lr = sentiment_lexicon_features(x_train_text)
+    xdv_lex_lr = sentiment_lexicon_features(x_dev_text)
+    xte_lex_lr = sentiment_lexicon_features(x_test_text)
+    xtr_lex_mnb = sentiment_lexicon_nonnegative_features(x_train_text)
+    xdv_lex_mnb = sentiment_lexicon_nonnegative_features(x_dev_text)
+    xte_lex_mnb = sentiment_lexicon_nonnegative_features(x_test_text)
+    xtr_lex_bin = sentiment_lexicon_binary_features(x_train_text)
+    xdv_lex_bin = sentiment_lexicon_binary_features(x_dev_text)
+    xte_lex_bin = sentiment_lexicon_binary_features(x_test_text)
 
-    mnb_alpha = _best_alpha_custom(xtr_mnb, ytr, model_kind="mnb")
-    bnb_alpha = _best_alpha_custom(xtr_bnb, ytr, model_kind="bnb")
-    lr_best_lr, lr_best_reg = _best_lr_custom(xtr_lr, ytr)
+    xtr_mnb = np.hstack([xtr_counts, xtr_lex_mnb])
+    xdv_mnb = np.hstack([xdv_counts, xdv_lex_mnb])
+    xte_mnb = np.hstack([xte_counts, xte_lex_mnb])
+    xtr_bnb = np.hstack([xtr_binary, xtr_lex_bin])
+    xdv_bnb = np.hstack([xdv_binary, xdv_lex_bin])
+    xte_bnb = np.hstack([xte_binary, xte_lex_bin])
+    xtr_lr = np.hstack([xtr_counts, xtr_lex_lr])
+    xdv_lr = np.hstack([xdv_counts, xdv_lex_lr])
+    xte_lr = np.hstack([xte_counts, xte_lex_lr])
 
-    mnb = MultinomialNB(alpha=mnb_alpha).fit(xtr_mnb, ytr)
+    mnb_alpha = 1.0
+    bnb_alpha = 1.0
+    lr_best_lr = 0.2
+    lr_best_reg = 1e-4
+    mnb_dev_macro_f1 = float("-inf")
+    bnb_dev_macro_f1 = float("-inf")
+    lr_dev_macro_f1 = float("-inf")
+
+    for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
+        model = MultinomialNB(alpha=alpha).fit(xtr_mnb, y_train)
+        pred_dev = model.predict(xdv_mnb)
+        score = _macro_f1(y_dev, pred_dev)
+        if score > mnb_dev_macro_f1:
+            mnb_dev_macro_f1 = score
+            mnb_alpha = alpha
+
+    for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
+        model = BernoulliNB(alpha=alpha).fit(xtr_bnb, y_train)
+        pred_dev = model.predict(xdv_bnb)
+        score = _macro_f1(y_dev, pred_dev)
+        if score > bnb_dev_macro_f1:
+            bnb_dev_macro_f1 = score
+            bnb_alpha = alpha
+
+    for lr in (0.05, 0.1, 0.2):
+        for reg in (1e-5, 1e-4, 1e-3):
+            model = LogisticBinary(
+                lr=lr,
+                epochs=35,
+                reg_type="l2",
+                reg_strength=reg,
+            ).fit(xtr_lr, y_train)
+            pred_dev = model.predict(xdv_lr)
+            score = _macro_f1(y_dev, pred_dev)
+            if score > lr_dev_macro_f1:
+                lr_dev_macro_f1 = score
+                lr_best_lr = lr
+                lr_best_reg = reg
+
+    mnb = MultinomialNB(alpha=mnb_alpha).fit(xtr_mnb, y_train)
+    pred_mnb_dev = mnb.predict(xdv_mnb)
     pred_mnb = mnb.predict(xte_mnb)
-    m_mnb = _metrics_with_macro_f1(yte, pred_mnb)
+    m_mnb_dev = _metrics_with_macro_f1(y_dev, pred_mnb_dev)
+    m_mnb = _metrics_with_macro_f1(y_test, pred_mnb)
 
-    bnb = BernoulliNB(alpha=bnb_alpha).fit(xtr_bnb, ytr)
+    bnb = BernoulliNB(alpha=bnb_alpha).fit(xtr_bnb, y_train)
+    pred_bnb_dev = bnb.predict(xdv_bnb)
     pred_bnb = bnb.predict(xte_bnb)
-    m_bnb = _metrics_with_macro_f1(yte, pred_bnb)
+    m_bnb_dev = _metrics_with_macro_f1(y_dev, pred_bnb_dev)
+    m_bnb = _metrics_with_macro_f1(y_test, pred_bnb)
 
     lr = LogisticBinary(
         lr=lr_best_lr,
         epochs=35,
         reg_type="l2",
         reg_strength=lr_best_reg,
-    ).fit(xtr_lr, ytr)
+    ).fit(xtr_lr, y_train)
+    pred_lr_dev = lr.predict(xdv_lr)
     pred_lr = lr.predict(xte_lr)
-    m_lr = _metrics_with_macro_f1(yte, pred_lr)
+    m_lr_dev = _metrics_with_macro_f1(y_dev, pred_lr_dev)
+    m_lr = _metrics_with_macro_f1(y_test, pred_lr)
 
-    p_lr_vs_mnb = mcnemar_exact_p(yte, pred_lr, pred_mnb)
-    p_lr_vs_bnb = mcnemar_exact_p(yte, pred_lr, pred_bnb)
-    p_mnb_vs_bnb = mcnemar_exact_p(yte, pred_mnb, pred_bnb)
+    p_lr_vs_mnb = mcnemar_exact_p(y_test, pred_lr, pred_mnb)
+    p_lr_vs_bnb = mcnemar_exact_p(y_test, pred_lr, pred_bnb)
+    p_mnb_vs_bnb = mcnemar_exact_p(y_test, pred_mnb, pred_bnb)
 
     macro_scores = {
         "multinomial_nb": m_mnb["macro_f1"],
@@ -656,6 +754,9 @@ def _run_task3_custom(
     return {
         "num_samples": float(len(texts)),
         "positive_ratio": float(y.mean()),
+        "train_examples": float(len(y_train)),
+        "dev_examples": float(len(y_dev)),
+        "test_examples": float(len(y_test)),
         "num_features_bow": float(len(vocab)),
         "data_source_code": 0.0,
         "data_source": data_source,
@@ -664,6 +765,18 @@ def _run_task3_custom(
         "bnb_best_alpha": float(bnb_alpha),
         "lr_best_lr": float(lr_best_lr),
         "lr_best_reg_strength": float(lr_best_reg),
+        "mnb_cv_macro_f1": float(mnb_dev_macro_f1),
+        "bnb_cv_macro_f1": float(bnb_dev_macro_f1),
+        "lr_cv_macro_f1": float(lr_dev_macro_f1),
+        "mnb_dev_accuracy": m_mnb_dev["accuracy"],
+        "mnb_dev_f1": m_mnb_dev["f1"],
+        "mnb_dev_macro_f1": m_mnb_dev["macro_f1"],
+        "bnb_dev_accuracy": m_bnb_dev["accuracy"],
+        "bnb_dev_f1": m_bnb_dev["f1"],
+        "bnb_dev_macro_f1": m_bnb_dev["macro_f1"],
+        "lr_dev_accuracy": m_lr_dev["accuracy"],
+        "lr_dev_f1": m_lr_dev["f1"],
+        "lr_dev_macro_f1": m_lr_dev["macro_f1"],
         "mnb_accuracy": m_mnb["accuracy"],
         "mnb_f1": m_mnb["f1"],
         "mnb_macro_f1": m_mnb["macro_f1"],
@@ -681,8 +794,15 @@ def _run_task3_custom(
     }
 
 
-def run_task3(root: Path, max_samples: int | None = None) -> Dict[str, object]:
-    dataset_path = sentiment_dataset_path_from_root(root)
+def run_task3(
+    root: Path,
+    max_samples: int | None = None,
+    dataset_path: Path | None = None,
+    test_ratio: float = 0.2,
+    dev_ratio_within_train: float = 0.2,
+) -> Dict[str, object]:
+    if dataset_path is None:
+        dataset_path = sentiment_dataset_path_from_root(root)
     texts, labels, data_source = load_sentiment_dataset(dataset_path)
     original_num_samples = len(texts)
     effective_max_samples = _normalize_task3_max_samples(max_samples)
@@ -723,9 +843,21 @@ def run_task3(root: Path, max_samples: int | None = None) -> Dict[str, object]:
         }
 
     if SKLEARN_AVAILABLE:
-        metrics = _run_task3_sklearn(texts, y, data_source)
+        metrics = _run_task3_sklearn(
+            texts,
+            y,
+            data_source,
+            test_ratio=test_ratio,
+            dev_ratio_within_train=dev_ratio_within_train,
+        )
     else:
-        metrics = _run_task3_custom(texts, y, data_source)
+        metrics = _run_task3_custom(
+            texts,
+            y,
+            data_source,
+            test_ratio=test_ratio,
+            dev_ratio_within_train=dev_ratio_within_train,
+        )
     metrics["uses_only_sentiment_dataset"] = 1.0
     metrics["num_samples_original"] = float(original_num_samples)
     metrics["sampled_for_memory"] = sampled_for_memory
