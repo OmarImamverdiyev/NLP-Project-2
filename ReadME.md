@@ -1,8 +1,11 @@
 ## NLP Project 2
 
 This repository supports running each assignment task independently.
-https://drive.google.com/drive/folders/1zPD4m9aAH4JH1urBDdPm4RBkOWXLnVt4?usp=sharing
 The sections below map each task number to the files that implement it and what they do.
+
+Datasets:
+1. https://drive.google.com/drive/folders/1zPD4m9aAH4JH1urBDdPm4RBkOWXLnVt4?usp=sharing
+2. https://github.com/AzTextCorpus/az-sentiment-analysis-dataset
 
 ### Run tasks separately
 
