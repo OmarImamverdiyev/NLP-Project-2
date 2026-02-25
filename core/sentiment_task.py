@@ -188,9 +188,53 @@ def _parse_binary_sentiment_label(raw_value: str) -> int | None:
         return None
 
 
-def load_sentiment_dataset(dataset_path: Path) -> Tuple[List[str], List[int], str]:
+def _parse_ternary_sentiment_label(raw_value: str) -> int | None:
+    value = raw_value.strip().lower()
+    if not value:
+        return None
+    if value in {"1", "+1", "positive", "pos", "true", "yes"}:
+        return 1
+    if value in {"0", "neutral", "neu", "mixed"}:
+        return 0
+    if value in {"-1", "negative", "neg", "false", "no"}:
+        return -1
+    try:
+        num = float(value)
+        if num > 0:
+            return 1
+        if num < 0:
+            return -1
+        return 0
+    except ValueError:
+        return None
+
+
+def _normalize_label_scheme(label_scheme: str) -> str:
+    scheme = (label_scheme or "binary").strip().lower()
+    if scheme in {"binary", "binary_01", "0_1", "01"}:
+        return "binary"
+    if scheme in {"ternary", "ternary_-1_0_1", "-1_0_1", "tri", "3class"}:
+        return "ternary"
+    raise ValueError(
+        f"Unsupported sentiment label scheme: {label_scheme}. "
+        "Use 'binary' or 'ternary'."
+    )
+
+
+def parse_sentiment_label(raw_value: str, label_scheme: str = "binary") -> int | None:
+    scheme = _normalize_label_scheme(label_scheme)
+    if scheme == "ternary":
+        return _parse_ternary_sentiment_label(raw_value)
+    return _parse_binary_sentiment_label(raw_value)
+
+
+def load_sentiment_dataset(
+    dataset_path: Path,
+    label_scheme: str = "binary",
+) -> Tuple[List[str], List[int], str]:
     texts: List[str] = []
     labels: List[int] = []
+    scheme = _normalize_label_scheme(label_scheme)
 
     if not dataset_path.exists():
         return texts, labels, f"missing:{dataset_path}"
@@ -214,7 +258,7 @@ def load_sentiment_dataset(dataset_path: Path) -> Tuple[List[str], List[int], st
                 text = (row.get(text_col) or "").strip()
                 if not text:
                     continue
-                label = _parse_binary_sentiment_label(row.get(label_col) or "")
+                label = parse_sentiment_label(row.get(label_col) or "", label_scheme=scheme)
                 if label is None:
                     continue
                 texts.append(text)
@@ -222,7 +266,10 @@ def load_sentiment_dataset(dataset_path: Path) -> Tuple[List[str], List[int], st
     except Exception:
         return [], [], f"read_error:{dataset_path}"
 
-    return texts, labels, f"sentiment_dataset:{dataset_path}"
+    source = f"sentiment_dataset:{dataset_path}"
+    if scheme != "binary":
+        source = f"{source}|label_scheme:{scheme}"
+    return texts, labels, source
 
 
 def build_vocab_for_classification(

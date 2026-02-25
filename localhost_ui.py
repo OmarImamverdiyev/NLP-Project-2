@@ -27,7 +27,7 @@ from core.language_modeling import (
     train_dev_test_split,
     tune_linear_interpolation,
 )
-from core.ml import LogisticBinary, classification_metrics
+from core.ml import LogisticBinary
 from core.paths import NEWS_CORPUS_PATH, ROOT
 from core.sentence_boundary_task_v2 import fit_task4_v2_assets
 from core.sentiment_task import (
@@ -192,14 +192,25 @@ def _sentiment_demo_model_file(
     max_samples: int,
     max_vocab: int,
     min_freq: int,
+    label_scheme: str,
 ) -> Path:
     key = (
-        "sentiment_demo_v3|"
+        "sentiment_demo_v4|"
         f"{dataset_resolved}|{int(dataset_size)}|{int(dataset_mtime_ns)}|"
-        f"{int(max_samples)}|{int(max_vocab)}|{int(min_freq)}"
+        f"{int(max_samples)}|{int(max_vocab)}|{int(min_freq)}|{label_scheme}"
     )
     model_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
     return root / "models" / "sentiment_demo" / f"sentiment_demo_{model_hash}.pkl"
+
+
+def _sentiment_label_name(label_value: int, label_scheme: str) -> str:
+    if label_scheme == "ternary":
+        return {-1: "negative", 0: "neutral", 1: "positive"}.get(label_value, str(label_value))
+    if label_value == 1:
+        return "positive"
+    if label_value == 0:
+        return "negative"
+    return str(label_value)
 
 
 def _load_pickled_sentiment_assets(path: Path) -> Dict[str, Any] | None:
@@ -222,8 +233,13 @@ def _train_sentiment_demo(
     max_samples: int,
     max_vocab: int,
     min_freq: int,
+    label_scheme: str,
 ) -> Dict[str, Any]:
     root = Path(root_path)
+    label_scheme = (label_scheme or "binary").strip().lower()
+    if label_scheme not in {"binary", "ternary"}:
+        raise ValueError("label_scheme must be 'binary' or 'ternary'.")
+
     if dataset_path_input.strip():
         raw_dataset_path = Path(dataset_path_input.strip())
         dataset_path = raw_dataset_path if raw_dataset_path.is_absolute() else (root / raw_dataset_path)
@@ -239,37 +255,52 @@ def _train_sentiment_demo(
         max_samples=int(max_samples),
         max_vocab=int(max_vocab),
         min_freq=int(min_freq),
+        label_scheme=label_scheme,
     )
     payload = _load_pickled_sentiment_assets(model_file)
     if payload is not None:
+        payload.setdefault("label_scheme", label_scheme)
+        if "class_values" not in payload:
+            if payload["label_scheme"] == "binary":
+                payload["class_values"] = [0, 1]
+            elif hasattr(payload.get("model"), "classes_"):
+                payload["class_values"] = [int(v) for v in payload["model"].classes_.tolist()]
         payload["loaded_from_disk"] = 1.0
         payload["model_path"] = str(model_file)
         return payload
 
-    legacy_key = (
-        "sentiment_demo_v1|"
-        f"{dataset_resolved}|{int(dataset_stat.st_size)}|{int(dataset_stat.st_mtime_ns)}|"
-        f"{int(max_samples)}|{int(max_vocab)}|{int(min_freq)}"
-    )
-    legacy_hash = hashlib.sha256(legacy_key.encode("utf-8")).hexdigest()[:24]
-    legacy_file = root / ".cache" / "sentiment_demo" / f"{legacy_hash}.pkl"
-    payload = _load_pickled_sentiment_assets(legacy_file)
-    if payload is not None:
-        payload["loaded_from_disk"] = 1.0
-        payload["model_path"] = str(model_file)
-        try:
-            model_file.parent.mkdir(parents=True, exist_ok=True)
-            with model_file.open("wb") as f:
-                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
-        except (OSError, pickle.PickleError):
-            pass
-        return payload
+    if label_scheme == "binary":
+        legacy_key = (
+            "sentiment_demo_v1|"
+            f"{dataset_resolved}|{int(dataset_stat.st_size)}|{int(dataset_stat.st_mtime_ns)}|"
+            f"{int(max_samples)}|{int(max_vocab)}|{int(min_freq)}"
+        )
+        legacy_hash = hashlib.sha256(legacy_key.encode("utf-8")).hexdigest()[:24]
+        legacy_file = root / ".cache" / "sentiment_demo" / f"{legacy_hash}.pkl"
+        payload = _load_pickled_sentiment_assets(legacy_file)
+        if payload is not None:
+            payload.setdefault("label_scheme", "binary")
+            payload.setdefault("class_values", [0, 1])
+            payload["loaded_from_disk"] = 1.0
+            payload["model_path"] = str(model_file)
+            try:
+                model_file.parent.mkdir(parents=True, exist_ok=True)
+                with model_file.open("wb") as f:
+                    pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+            except (OSError, pickle.PickleError):
+                pass
+            return payload
 
-    texts, labels, data_source = load_sentiment_dataset(dataset_path)
+    texts, labels, data_source = load_sentiment_dataset(dataset_path, label_scheme=label_scheme)
     if len(texts) < 200:
         raise ValueError(f"Sentiment dataset too small or invalid: {data_source}")
 
     y = np.array(labels, dtype=np.int64)
+    class_values_all = np.unique(y)
+    if len(class_values_all) < 2:
+        raise ValueError(
+            "Dataset must contain at least two classes after applying the selected label config."
+        )
     subset_idx = _stratified_take_indices(y, max_samples)
     texts_sub = [texts[int(i)] for i in subset_idx.tolist()]
     y_sub = y[subset_idx]
@@ -318,6 +349,12 @@ def _train_sentiment_demo(
             vectorizer = None
 
     if vectorizer is None:
+        classes_in_train = np.unique(y_train)
+        if label_scheme != "binary" or set(classes_in_train.tolist()) != {0, 1}:
+            raise RuntimeError(
+                "The selected label config requires scikit-learn in this demo. "
+                "Install scikit-learn or use the binary (0/1) label config."
+            )
         xtr_counts = vectorize_bow_counts(x_train_text, vocab)
         xte_counts = vectorize_bow_counts(x_test_text, vocab)
         xtr_lex = sentiment_lexicon_features(x_train_text)
@@ -327,7 +364,8 @@ def _train_sentiment_demo(
         model = LogisticBinary(lr=0.2, epochs=35, reg_type="l2", reg_strength=1e-4).fit(xtr, y_train)
         pred = model.predict(xte)
 
-    test_metrics = classification_metrics(y_test, pred) if len(y_test) else {"accuracy": 0.0}
+    test_accuracy = float((pred == y_test).mean()) if len(y_test) else 0.0
+    class_values_sorted = sorted({int(v) for v in np.unique(y_sub).tolist()})
 
     assets = {
         "model": model,
@@ -335,10 +373,12 @@ def _train_sentiment_demo(
         "vectorizer": vectorizer,
         "uses_sklearn_sparse": uses_sklearn_sparse,
         "dataset_path": str(dataset_path),
+        "label_scheme": label_scheme,
+        "class_values": class_values_sorted,
         "num_samples": len(texts_sub),
         "train_samples": len(y_train),
         "test_samples": len(y_test),
-        "test_accuracy": float(test_metrics.get("accuracy", 0.0)),
+        "test_accuracy": test_accuracy,
         "loaded_from_disk": 0.0,
         "model_path": str(model_file),
     }
@@ -353,6 +393,7 @@ def _train_sentiment_demo(
 
 def _predict_sentiment(text: str, sentiment_assets: Mapping[str, Any]) -> Dict[str, Any]:
     model = sentiment_assets["model"]
+    label_scheme = str(sentiment_assets.get("label_scheme", "binary"))
     if float(sentiment_assets.get("uses_sklearn_sparse", 0.0)) >= 0.5:
         from scipy import sparse
 
@@ -367,12 +408,39 @@ def _predict_sentiment(text: str, sentiment_assets: Mapping[str, Any]) -> Dict[s
         x = np.hstack([x_count, x_lex])
 
     raw_proba = model.predict_proba(x)
+    class_probabilities: Dict[str, float] = {}
+    pred_class = 0
     if isinstance(raw_proba, np.ndarray) and raw_proba.ndim == 2:
-        proba = float(raw_proba[0, 1])
+        if hasattr(model, "classes_"):
+            model_classes = [int(v) for v in model.classes_.tolist()]
+        else:
+            model_classes = [int(v) for v in sentiment_assets.get("class_values", [0, 1])]
+            if len(model_classes) != raw_proba.shape[1]:
+                model_classes = list(range(raw_proba.shape[1]))
+        row = raw_proba[0]
+        for idx, cls in enumerate(model_classes):
+            class_probabilities[str(int(cls))] = float(row[idx])
+        pred_class = int(model_classes[int(np.argmax(row))])
     else:
-        proba = float(raw_proba[0])
-    label = "positive" if proba >= 0.5 else "negative"
-    return {"label": label, "positive_probability": proba}
+        positive_prob = float(raw_proba[0])
+        class_probabilities["0"] = float(1.0 - positive_prob)
+        class_probabilities["1"] = positive_prob
+        pred_class = 1 if positive_prob >= 0.5 else 0
+
+    named_probabilities = {
+        _sentiment_label_name(int(cls), label_scheme): prob
+        for cls, prob in class_probabilities.items()
+    }
+    positive_probability = class_probabilities.get("1")
+    return {
+        "label": _sentiment_label_name(pred_class, label_scheme),
+        "label_id": int(pred_class),
+        "positive_probability": (
+            float(positive_probability) if positive_probability is not None else None
+        ),
+        "class_probabilities": class_probabilities,
+        "named_probabilities": named_probabilities,
+    }
 
 
 @st.cache_resource(show_spinner=False)
@@ -610,7 +678,7 @@ def _run_sentiment_demo_panel(root_path: Path) -> None:
     st.subheader("Sentiment Demo")
     st.caption("Simple interactive predictor trained from your sentiment dataset.")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     max_samples = col1.number_input(
         "Demo max samples", min_value=0, value=0, step=500
     )
@@ -618,6 +686,16 @@ def _run_sentiment_demo_panel(root_path: Path) -> None:
         "Demo max vocab", min_value=1000, max_value=50000, value=25000, step=500
     )
     min_freq = col3.number_input("Min token freq", min_value=1, max_value=10, value=2, step=1)
+    label_choice = col4.selectbox(
+        "Label config",
+        options=[
+            "Binary (0=negative, 1=positive)",
+            "Ternary (-1=negative, 0=neutral, 1=positive)",
+        ],
+        index=0,
+        key="sentiment_label_config_choice",
+    )
+    label_scheme = "ternary" if label_choice.startswith("Ternary") else "binary"
 
     dataset_auto = sentiment_dataset_path_from_root(root_path)
     dataset_v1 = root_path / "sentiment_dataset" / "dataset_v1.csv"
@@ -647,6 +725,7 @@ def _run_sentiment_demo_panel(root_path: Path) -> None:
     settings_key = (
         str(root_path),
         dataset_input.strip(),
+        label_scheme,
         int(max_samples),
         int(max_vocab),
         int(min_freq),
@@ -662,15 +741,26 @@ def _run_sentiment_demo_panel(root_path: Path) -> None:
                 int(max_samples),
                 int(max_vocab),
                 int(min_freq),
+                label_scheme,
             ),
         )
         prediction = _predict_sentiment(sentiment_text, assets)
-        st.metric("Prediction", prediction["label"])
-        st.metric("Positive Probability", _format_value(prediction["positive_probability"]))
+        st.metric("Prediction", f"{prediction['label']} ({prediction['label_id']})")
+        if prediction.get("positive_probability") is not None:
+            st.metric("Positive Probability", _format_value(prediction["positive_probability"]))
+        prob_rows = [
+            {"label": label_name, "probability": prob}
+            for label_name, prob in prediction.get("named_probabilities", {}).items()
+        ]
+        if prob_rows:
+            prob_df = pd.DataFrame(prob_rows).sort_values("probability", ascending=False)
+            st.dataframe(prob_df, use_container_width=True, hide_index=True)
         source_label = "loaded" if float(assets.get("loaded_from_disk", 0.0)) >= 0.5 else "trained"
         st.caption(
             f"Demo model ({source_label}) uses {assets['num_samples']} samples from {assets['dataset_path']} "
-            f"(test accuracy ~ {assets['test_accuracy']:.4f}). Saved at: {assets.get('model_path', 'n/a')}"
+            f"with {assets.get('label_scheme', 'binary')} labels "
+            f"(test accuracy ~ {assets['test_accuracy']:.4f}). "
+            f"Saved at: {assets.get('model_path', 'n/a')}"
         )
 
 
