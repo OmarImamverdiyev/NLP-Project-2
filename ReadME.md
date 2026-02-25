@@ -53,6 +53,11 @@ Task 3:
 python Task3/run_task3.py --root .
 ```
 
+python Task3\run_task3.py --dataset-path sentiment_dataset\dataset_v1.csv --max-samples 0
+
+python Task3\tune_task3.py --dataset-path sentiment_dataset\dataset_v1.csv --max-samples 0 --search-mode extended --selection-metric dev_macro_f1 --save-json Task3\tuning_task3_v1.json
+
+
 If Task 3 runs out of memory, cap the dataset size:
 
 ```powershell
