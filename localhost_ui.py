@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import math
 import re
-from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
 
@@ -28,12 +27,7 @@ from core.language_modeling import (
 )
 from core.ml import LogisticBinary, classification_metrics
 from core.paths import NEWS_CORPUS_PATH, ROOT
-from core.sentence_boundary_task import (
-    ABBREV_SET,
-    extract_dot_examples,
-    select_best_threshold_by_accuracy,
-    split_train_dev_test_xy,
-)
+from core.sentence_boundary_task_v2 import fit_task4_v2_assets
 from core.sentiment_task import (
     build_vocab_for_classification,
     load_sentiment_dataset,
@@ -250,154 +244,126 @@ def _predict_sentiment(text: str, sentiment_assets: Mapping[str, Any]) -> Dict[s
     return {"label": label, "positive_probability": proba}
 
 
-def _build_task4_vocabs(
-    feats: Sequence[Mapping[str, float | str]],
-    max_vocab_tokens: int,
-) -> Tuple[Dict[str, int], Dict[str, int]]:
-    prev_counts = Counter(str(f["prev_tok"]) for f in feats)
-    next_counts = Counter(str(f["next_tok"]) for f in feats)
-    half = max(max_vocab_tokens // 2, 1)
-    prev_vocab = {tok: i for i, (tok, _c) in enumerate(prev_counts.most_common(half))}
-    next_vocab = {tok: i for i, (tok, _c) in enumerate(next_counts.most_common(half))}
-    return prev_vocab, next_vocab
-
-
-def _vectorize_task4_with_vocabs(
-    feats: Sequence[Mapping[str, float | str]],
-    prev_vocab: Mapping[str, int],
-    next_vocab: Mapping[str, int],
-) -> np.ndarray:
-    n_num = 10
-    off_prev = n_num
-    off_next = n_num + len(prev_vocab)
-    dim = n_num + len(prev_vocab) + len(next_vocab)
-    x = np.zeros((len(feats), dim), dtype=np.float32)
-
-    for i, f in enumerate(feats):
-        x[i, 0] = float(f["prev_len"])
-        x[i, 1] = float(f["next_len"])
-        x[i, 2] = float(f["prev_is_upper"])
-        x[i, 3] = float(f["next_is_upper_init"])
-        x[i, 4] = float(f["next_is_lower_init"])
-        x[i, 5] = float(f["prev_is_digit"])
-        x[i, 6] = float(f["next_is_digit"])
-        x[i, 7] = float(f["prev_is_abbrev"])
-        x[i, 8] = float(f["prev_short"])
-        x[i, 9] = float(f["prev_is_single_upper"])
-
-        p = prev_vocab.get(str(f["prev_tok"]))
-        if p is not None:
-            x[i, off_prev + p] = 1.0
-        n = next_vocab.get(str(f["next_tok"]))
-        if n is not None:
-            x[i, off_next + n] = 1.0
-    return x
-
-
 @st.cache_resource(show_spinner=False)
 def _train_task4_demo(
-    news_path: str,
-    max_docs: int,
+    dataset_path: str,
     max_examples: int,
-    max_vocab_tokens: int,
 ) -> Dict[str, Any]:
-    feats, y = extract_dot_examples(
-        Path(news_path),
-        max_docs=max_docs,
+    return fit_task4_v2_assets(
+        dataset_path=dataset_path,
         max_examples=max_examples,
     )
-    if len(y) < 1000:
-        raise ValueError("Not enough dot examples to train sentence boundary demo model.")
-
-    prev_vocab, next_vocab = _build_task4_vocabs(feats, max_vocab_tokens=max_vocab_tokens)
-    x = _vectorize_task4_with_vocabs(feats, prev_vocab, next_vocab)
-    x[:, :2] = np.clip(x[:, :2], 0.0, 30.0)
-
-    xtr, xdv, xte, ytr, ydv, yte = split_train_dev_test_xy(
-        x,
-        y,
-        test_ratio=0.2,
-        dev_ratio_within_train=0.1,
-    )
-    model = LogisticBinary(lr=0.2, epochs=40, reg_type="l2", reg_strength=1e-4).fit(xtr, ytr)
-    threshold, dev_acc = select_best_threshold_by_accuracy(model.predict_proba(xdv), ydv)
-    pred_test = (model.predict_proba(xte) >= threshold).astype(np.int64)
-    m_test = classification_metrics(yte, pred_test)
-    return {
-        "model": model,
-        "threshold": threshold,
-        "prev_vocab": prev_vocab,
-        "next_vocab": next_vocab,
-        "num_examples": len(y),
-        "test_accuracy": float(m_test["accuracy"]),
-        "dev_accuracy": float(dev_acc),
-    }
 
 
-def _extract_dot_features_for_text(text: str) -> List[Dict[str, float | str]]:
-    features: List[Dict[str, float | str]] = []
+def _dataset_signature(path: Path) -> Tuple[str, int, int]:
+    resolved = path.resolve()
+    stat = resolved.stat()
+    return str(resolved), int(stat.st_size), int(stat.st_mtime_ns)
+
+
+def _extract_dot_features_for_text(text: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
     for match in re.finditer(r"\.", text):
         i = match.start()
-        left = text[:i]
-        right = text[i + 1 :]
-        prev_match = re.search(r"(\w+)$", left, flags=re.UNICODE)
-        next_match = re.match(r"^\s*([\w]+)", right, flags=re.UNICODE)
-        prev_tok = prev_match.group(1) if prev_match else ""
-        next_tok = next_match.group(1) if next_match else ""
-        next_initial = next_tok[:1]
-        prev_tok_l = prev_tok.lower()
 
-        features.append(
-            {
-                "prev_tok": prev_tok_l,
-                "next_tok": next_tok.lower(),
-                "prev_len": float(len(prev_tok)),
-                "next_len": float(len(next_tok)),
-                "prev_is_upper": float(prev_tok.isupper() and bool(prev_tok)),
-                "next_is_upper_init": float(bool(next_initial.isupper())),
-                "next_is_lower_init": float(bool(next_initial.islower())),
-                "prev_is_digit": float(prev_tok.isdigit() and bool(prev_tok)),
-                "next_is_digit": float(next_tok.isdigit() and bool(next_tok)),
-                "prev_is_abbrev": float(prev_tok_l in ABBREV_SET),
-                "prev_short": float(len(prev_tok) <= 3 and bool(prev_tok)),
-                "prev_is_single_upper": float(len(prev_tok) == 1 and prev_tok.isupper()),
-                "dot_index": float(i),
-            }
-        )
-    return features
+        prev_token = ""
+        j = i - 1
+        while j >= 0 and text[j].isalpha():
+            prev_token = text[j] + prev_token
+            j -= 1
 
+        next_token = ""
+        j = i + 1
+        while j < len(text) and text[j].isspace():
+            j += 1
+        while j < len(text) and text[j].isalpha():
+            next_token += text[j]
+            j += 1
 
-def _predict_dot_boundaries(text: str, task4_assets: Mapping[str, Any]) -> pd.DataFrame:
-    feats = _extract_dot_features_for_text(text)
-    if not feats:
-        return pd.DataFrame(columns=["dot_index", "prev_tok", "next_tok", "p_end", "prediction"])
-    x = _vectorize_task4_with_vocabs(feats, task4_assets["prev_vocab"], task4_assets["next_vocab"])
-    x[:, :2] = np.clip(x[:, :2], 0.0, 30.0)
-    proba = task4_assets["model"].predict_proba(x)
-    threshold = float(task4_assets["threshold"])
-
-    rows: List[Dict[str, Any]] = []
-    for f, p in zip(feats, proba.tolist()):
         rows.append(
             {
-                "dot_index": int(f["dot_index"]),
-                "prev_tok": f["prev_tok"],
-                "next_tok": f["next_tok"],
-                "p_end": float(p),
-                "prediction": "Sentence End" if p >= threshold else "Not End",
+                "dot_index": i,
+                "prev_token": prev_token.lower(),
+                "next_token": next_token.lower(),
+                "prev_len": len(prev_token),
+                "next_len": len(next_token),
+                "is_digit_before": int(i > 0 and text[i - 1].isdigit()),
             }
         )
-    return pd.DataFrame(rows)
+    return rows
+
+
+def _split_by_boundary_indices(text: str, boundary_indices: Sequence[int]) -> List[str]:
+    if not boundary_indices:
+        cleaned = text.strip()
+        return [cleaned] if cleaned else []
+
+    ordered = sorted({int(idx) for idx in boundary_indices})
+    out: List[str] = []
+    start = 0
+    for idx in ordered:
+        end = idx + 1
+        piece = text[start:end].strip()
+        if piece:
+            out.append(piece)
+        start = end
+    tail = text[start:].strip()
+    if tail:
+        out.append(tail)
+    return out
+
+
+def _predict_dot_boundaries(
+    text: str, task4_assets: Mapping[str, Any]
+) -> Tuple[pd.DataFrame, List[str]]:
+    rows = _extract_dot_features_for_text(text)
+    if not rows:
+        empty = pd.DataFrame(
+            columns=["dot_index", "prev_token", "next_token", "p_end", "prediction"]
+        )
+        return empty, []
+
+    feature_rows = [
+        {
+            "prev_token": row["prev_token"],
+            "next_token": row["next_token"],
+            "prev_len": row["prev_len"],
+            "next_len": row["next_len"],
+            "is_digit_before": row["is_digit_before"],
+        }
+        for row in rows
+    ]
+    x = task4_assets["vectorizer"].transform(feature_rows)
+    probs = task4_assets["best_model"].predict_proba(x)[:, 1]
+    threshold = float(task4_assets["best_threshold"])
+
+    boundary_indices: List[int] = []
+    pred_rows: List[Dict[str, Any]] = []
+    for row, prob in zip(rows, probs.tolist()):
+        is_end = float(prob) >= threshold
+        if is_end:
+            boundary_indices.append(int(row["dot_index"]))
+        pred_rows.append(
+            {
+                "dot_index": int(row["dot_index"]),
+                "prev_token": str(row["prev_token"]),
+                "next_token": str(row["next_token"]),
+                "p_end": float(prob),
+                "prediction": "Sentence End" if is_end else "Not End",
+            }
+        )
+
+    sentences = _split_by_boundary_indices(text, boundary_indices)
+    return pd.DataFrame(pred_rows), sentences
 
 
 def _run_results_panel(
     news_path: Path,
     root_path: Path,
+    task4_dataset_path: Path,
     max_sentences: int,
     min_freq: int,
-    max_docs: int,
     max_examples: int,
-    max_vocab_tokens: int,
 ) -> None:
     st.subheader("Task Results")
     if "task_results" not in st.session_state:
@@ -428,10 +394,8 @@ def _run_results_panel(
     if col4.button("Run Task 4", use_container_width=True):
         with st.spinner("Running Task 4..."):
             st.session_state["task_results"]["Task 4"] = run_task4(
-                news_path=news_path,
-                max_docs=max_docs,
+                dataset_path=task4_dataset_path,
                 max_examples=max_examples,
-                max_vocab_tokens=max_vocab_tokens,
             )
     if col5.button("Run All", use_container_width=True):
         with st.spinner("Running all tasks..."):
@@ -461,10 +425,8 @@ def _run_results_panel(
             task2["best_smoothing_by_ppl"] = min(TASK2_SMOOTH_KEYS, key=lambda k: task2[k])
             task3 = run_task3(root_path)
             task4 = run_task4(
-                news_path=news_path,
-                max_docs=max_docs,
+                dataset_path=task4_dataset_path,
                 max_examples=max_examples,
-                max_vocab_tokens=max_vocab_tokens,
             )
             st.session_state["task_results"] = {
                 "Task 1": task1,
@@ -565,19 +527,21 @@ def _run_sentiment_demo_panel(root_path: Path) -> None:
         )
 
 
-def _run_task4_demo_panel(news_path: Path) -> None:
+def _run_task4_demo_panel(task4_dataset_path: Path, default_max_examples: int) -> None:
     st.subheader("Sentence Boundary Demo")
-    st.caption("Predict whether each '.' in your text is a sentence boundary.")
+    st.caption(
+        "Predict whether each '.' in your text is a sentence boundary. "
+        "The demo model is trained once per dataset/settings and then reused."
+    )
 
-    col1, col2, col3 = st.columns(3)
-    max_docs = col1.number_input(
-        "Demo max docs", min_value=1000, max_value=50000, value=10000, step=1000
-    )
-    max_examples = col2.number_input(
-        "Demo max examples", min_value=2000, max_value=100000, value=25000, step=1000
-    )
-    max_vocab_tokens = col3.number_input(
-        "Demo vocab cap", min_value=1000, max_value=20000, value=4000, step=500
+    demo_default = min(max(int(default_max_examples), 2000), 100000)
+    max_examples = st.number_input(
+        "Demo max examples",
+        min_value=2000,
+        max_value=100000,
+        value=demo_default,
+        step=1000,
+        key="task4_demo_max_examples",
     )
 
     text = st.text_area(
@@ -587,32 +551,38 @@ def _run_task4_demo_panel(news_path: Path) -> None:
         key="task4_demo_text",
     )
 
-    settings_key = (
-        str(news_path),
-        int(max_docs),
-        int(max_examples),
-        int(max_vocab_tokens),
-    )
+    settings_key = (_dataset_signature(task4_dataset_path), int(max_examples))
     if st.button("Analyze Dots", key="task4_demo_btn"):
         assets = _load_once_per_settings(
-            state_slot="task4_assets",
+            state_slot="task4_v2_assets",
             settings_key=settings_key,
-            spinner_text="Training sentence boundary demo model...",
+            spinner_text="Training sentence boundary demo model (first time only)...",
             loader=lambda: _train_task4_demo(
-                str(news_path),
-                int(max_docs),
+                str(task4_dataset_path),
                 int(max_examples),
-                int(max_vocab_tokens),
             ),
         )
-        pred_df = _predict_dot_boundaries(text, assets)
+        pred_df, sentences = _predict_dot_boundaries(text, assets)
         if pred_df.empty:
             st.warning("No '.' found in text.")
             return
+
+        if sentences:
+            sentence_df = pd.DataFrame(
+                {
+                    "sentence_no": list(range(1, len(sentences) + 1)),
+                    "sentence": sentences,
+                }
+            )
+            st.markdown("**Separated Sentences**")
+            st.dataframe(sentence_df, use_container_width=True, hide_index=True)
+
+        st.markdown("**Dot-level Decisions**")
         st.dataframe(pred_df, use_container_width=True, hide_index=True)
         st.caption(
-            f"Demo model trained with {assets['num_examples']} examples "
-            f"(dev acc: {assets['dev_accuracy']:.4f}, test acc: {assets['test_accuracy']:.4f})."
+            f"Model uses {int(assets['metrics']['num_examples'])} examples "
+            f"(best penalty: {assets['best_penalty'].upper()}, "
+            f"test F1: {assets['metrics']['best_test_f1']:.4f})."
         )
 
 
@@ -625,27 +595,28 @@ def main() -> None:
         st.header("Run Settings")
         news_path_input = st.text_input("News corpus path", value=str(NEWS_CORPUS_PATH))
         root_path_input = st.text_input("Project root path", value=str(ROOT))
+        task4_dataset_input = st.text_input(
+            "Task4 v2 dataset path", value=str(ROOT / "dot_labeled_data.csv")
+        )
         max_sentences = st.number_input(
             "Task1/2 max sentences", min_value=1000, max_value=200000, value=120000, step=1000
         )
         min_freq = st.number_input("Task1/2 min freq", min_value=1, max_value=10, value=2, step=1)
-        max_docs = st.number_input(
-            "Task4 max docs", min_value=1000, max_value=100000, value=30000, step=1000
-        )
         max_examples = st.number_input(
             "Task4 max examples", min_value=2000, max_value=200000, value=60000, step=1000
-        )
-        max_vocab_tokens = st.number_input(
-            "Task4 max vocab tokens", min_value=1000, max_value=30000, value=6000, step=500
         )
 
     news_path = Path(news_path_input)
     root_path = Path(root_path_input)
+    task4_dataset_path = Path(task4_dataset_input)
     if not news_path.exists():
         st.error(f"News corpus not found: {news_path}")
         return
     if not root_path.exists():
         st.error(f"Project root not found: {root_path}")
+        return
+    if not task4_dataset_path.exists():
+        st.error(f"Task4 v2 dataset not found: {task4_dataset_path}")
         return
 
     tab_results, tab_lm, tab_sentiment, tab_boundary = st.tabs(
@@ -657,18 +628,17 @@ def main() -> None:
             _run_results_panel(
                 news_path,
                 root_path,
+                task4_dataset_path,
                 int(max_sentences),
                 int(min_freq),
-                int(max_docs),
                 int(max_examples),
-                int(max_vocab_tokens),
             )
         with tab_lm:
             _run_lm_demo_panel(news_path, int(max_sentences), int(min_freq))
         with tab_sentiment:
             _run_sentiment_demo_panel(root_path)
         with tab_boundary:
-            _run_task4_demo_panel(news_path)
+            _run_task4_demo_panel(task4_dataset_path, int(max_examples))
     except Exception as exc:
         st.exception(exc)
 

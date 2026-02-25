@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
+import pickle
 import re
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
 from core.ml import LogisticBinary, classification_metrics, mcnemar_exact_p
-from core.paths import SEED
+from core.paths import ROOT, SEED
 
 
 ABBREV_SET = {
@@ -62,6 +66,75 @@ ABBREV_SET = {
     "nov",
     "dec",
 }
+
+TASK4_CACHE_VERSION = "task4-cache-v1"
+TASK4_CACHE_DIR = ROOT / ".cache" / "task4"
+
+
+def _task4_source_metadata(path: Path) -> Dict[str, int | str]:
+    resolved = path.resolve()
+    st = resolved.stat()
+    return {
+        "path": str(resolved),
+        "size": int(st.st_size),
+        "mtime_ns": int(st.st_mtime_ns),
+    }
+
+
+def _task4_cache_file(
+    source_path: Path,
+    max_docs: int | None,
+    max_examples: int | None,
+    max_vocab_tokens: int,
+) -> Path | None:
+    try:
+        source_meta = _task4_source_metadata(source_path)
+    except OSError:
+        return None
+
+    key_payload = {
+        "version": TASK4_CACHE_VERSION,
+        "seed": SEED,
+        "source": source_meta,
+        "max_docs": max_docs,
+        "max_examples": max_examples,
+        "max_vocab_tokens": max_vocab_tokens,
+    }
+    encoded = json.dumps(key_payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    digest = hashlib.sha256(encoded).hexdigest()
+    return TASK4_CACHE_DIR / f"{digest}.pkl"
+
+
+def _load_task4_cached_metrics(cache_file: Path | None) -> Dict[str, float] | None:
+    if cache_file is None or not cache_file.exists():
+        return None
+    try:
+        with cache_file.open("rb") as f:
+            payload = pickle.load(f)
+    except (OSError, pickle.PickleError, EOFError, AttributeError, ValueError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("version") != TASK4_CACHE_VERSION:
+        return None
+    metrics = payload.get("metrics")
+    if not isinstance(metrics, dict):
+        return None
+    return dict(metrics)
+
+
+def _save_task4_cache(cache_file: Path | None, payload: Dict[str, object]) -> None:
+    if cache_file is None:
+        return
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        with cache_file.open("wb") as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except (OSError, pickle.PickleError):
+        return
 
 
 def extract_dot_examples(
@@ -325,19 +398,49 @@ def run_task4(
     max_vocab_tokens: int = 6000,
 ) -> Dict[str, float]:
     if labeled_csv_path is not None:
-        feats, y = extract_dot_examples_from_labeled_csv(
-            labeled_csv_path,
-            max_examples=max_examples,
-        )
-        source_name = str(labeled_csv_path)
+        source_path = Path(labeled_csv_path)
+        source_name = str(source_path)
+        max_docs_for_cache = None
     else:
         if news_path is None:
             raise ValueError("news_path is required when labeled_csv_path is not provided.")
-        feats, y = extract_dot_examples(news_path, max_docs=max_docs, max_examples=max_examples)
-        source_name = str(news_path)
+        source_path = Path(news_path)
+        source_name = str(source_path)
+        max_docs_for_cache = max_docs
+
+    cache_file = _task4_cache_file(
+        source_path=source_path,
+        max_docs=max_docs_for_cache,
+        max_examples=max_examples,
+        max_vocab_tokens=max_vocab_tokens,
+    )
+    cached_metrics = _load_task4_cached_metrics(cache_file)
+    if cached_metrics is not None:
+        return cached_metrics
+
+    if labeled_csv_path is not None:
+        feats, y = extract_dot_examples_from_labeled_csv(
+            source_path,
+            max_examples=max_examples,
+        )
+    else:
+        feats, y = extract_dot_examples(
+            source_path,
+            max_docs=max_docs,
+            max_examples=max_examples,
+        )
 
     if len(y) < 1000:
-        return {"error": 1.0, "num_examples": float(len(y)), "data_source": source_name}
+        metrics = {"error": 1.0, "num_examples": float(len(y)), "data_source": source_name}
+        _save_task4_cache(
+            cache_file,
+            {
+                "version": TASK4_CACHE_VERSION,
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                "metrics": metrics,
+            },
+        )
+        return metrics
 
     cur_n = len(y)
     cur_vocab = max_vocab_tokens
@@ -356,13 +459,22 @@ def run_task4(
             next_n = max(min_n, cur_n // 2)
             next_vocab = max(min_vocab, cur_vocab // 2)
             if next_n == cur_n and next_vocab == cur_vocab:
-                return {
+                metrics = {
                     "error": 1.0,
                     "num_examples": float(len(y)),
                     "used_examples": float(cur_n),
                     "used_vocab_cap": float(cur_vocab),
                     "data_source": source_name,
                 }
+                _save_task4_cache(
+                    cache_file,
+                    {
+                        "version": TASK4_CACHE_VERSION,
+                        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                        "metrics": metrics,
+                    },
+                )
+                return metrics
             cur_n = next_n
             cur_vocab = next_vocab
 
@@ -396,7 +508,7 @@ def run_task4(
 
     p_l2_vs_l1 = mcnemar_exact_p(yte, pred_l2, pred_l1)
     majority_baseline_acc = max(float((yte == 1).mean()), float((yte == 0).mean()))
-    return {
+    metrics = {
         "data_source": source_name,
         "num_examples": float(len(y)),
         "used_examples": float(len(y_work)),
@@ -416,3 +528,16 @@ def run_task4(
         "l1_f1": m_l1["f1"],
         "p_l2_vs_l1": p_l2_vs_l1,
     }
+    _save_task4_cache(
+        cache_file,
+        {
+            "version": TASK4_CACHE_VERSION,
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "metrics": metrics,
+            "l2_model": l2_model,
+            "l1_model": l1_model,
+            "l2_threshold": float(l2_threshold),
+            "l1_threshold": float(l1_threshold),
+        },
+    )
+    return metrics

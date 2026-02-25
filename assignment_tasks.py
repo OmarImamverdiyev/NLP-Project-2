@@ -5,7 +5,7 @@ NLP Project 2 orchestrator.
 Task implementations live in task-specific modules:
   - Task 1/2: core.language_modeling
   - Task 3:   core.sentiment_task
-  - Task 4:   core.sentence_boundary_task
+  - Task 4:   core.sentence_boundary_task_v2
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from core.language_modeling import (
 from core.paths import NEWS_CORPUS_PATH, ROOT
 from core.reporting import print_section
 from core.sentiment_task import run_task3 as _run_task3
-from core.sentence_boundary_task import run_task4 as _run_task4
+from core.sentence_boundary_task_v2 import run_task4 as _run_task4
 
 
 def run_task1(
@@ -54,16 +54,16 @@ def run_task3(root: Path) -> Dict[str, float]:
 
 
 def run_task4(
-    news_path: Path,
+    news_path: Path | None = None,
     max_docs: int | None = 30000,
     max_examples: int | None = 60000,
     max_vocab_tokens: int = 6000,
-) -> Dict[str, float]:
+    dataset_path: Path | None = None,
+) -> Dict[str, float | str]:
+    _ = news_path, max_docs, max_vocab_tokens  # kept for backward-compatible call sites
     return _run_task4(
-        news_path=news_path,
-        max_docs=max_docs,
+        dataset_path=dataset_path,
         max_examples=max_examples,
-        max_vocab_tokens=max_vocab_tokens,
     )
 
 
@@ -72,6 +72,7 @@ def main() -> None:
     parser.add_argument("--max-sentences", type=int, default=120000)
     parser.add_argument("--min-freq", type=int, default=2)
     parser.add_argument("--skip-task4", action="store_true")
+    parser.add_argument("--task4-dataset", type=Path, default=ROOT / "dot_labeled_data.csv")
     parser.add_argument("--max-docs", type=int, default=30000)
     parser.add_argument("--max-examples", type=int, default=60000)
     parser.add_argument("--max-vocab-tokens", type=int, default=6000)
@@ -92,7 +93,7 @@ def main() -> None:
 
     if not args.skip_task4:
         t4 = run_task4(
-            NEWS_CORPUS_PATH,
+            dataset_path=args.task4_dataset,
             max_docs=args.max_docs,
             max_examples=args.max_examples,
             max_vocab_tokens=args.max_vocab_tokens,
