@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 import re
+import hashlib
+import pickle
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
 
@@ -195,6 +197,25 @@ def _train_sentiment_demo(
         if dataset_path_input.strip()
         else sentiment_dataset_path_from_root(root)
     )
+    dataset_resolved = dataset_path.resolve()
+    dataset_stat = dataset_resolved.stat()
+    cache_key = (
+        "sentiment_demo_v1|"
+        f"{dataset_resolved}|{int(dataset_stat.st_size)}|{int(dataset_stat.st_mtime_ns)}|"
+        f"{int(max_samples)}|{int(max_vocab)}|{int(min_freq)}"
+    )
+    cache_hash = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:24]
+    cache_file = root / ".cache" / "sentiment_demo" / f"{cache_hash}.pkl"
+
+    if cache_file.exists():
+        try:
+            with cache_file.open("rb") as f:
+                payload = pickle.load(f)
+            if isinstance(payload, dict) and "model" in payload and "vocab" in payload:
+                return payload
+        except (OSError, pickle.PickleError, EOFError, AttributeError, ValueError):
+            pass
+
     texts, labels, data_source = load_sentiment_dataset(dataset_path)
     if len(texts) < 200:
         raise ValueError(f"Sentiment dataset too small or invalid: {data_source}")
@@ -222,7 +243,7 @@ def _train_sentiment_demo(
     pred = model.predict(xte)
     test_metrics = classification_metrics(y_test, pred) if len(y_test) else {"accuracy": 0.0}
 
-    return {
+    assets = {
         "model": model,
         "vocab": vocab,
         "dataset_path": str(dataset_path),
@@ -231,6 +252,13 @@ def _train_sentiment_demo(
         "test_samples": len(y_test),
         "test_accuracy": float(test_metrics.get("accuracy", 0.0)),
     }
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        with cache_file.open("wb") as f:
+            pickle.dump(assets, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except (OSError, pickle.PickleError):
+        pass
+    return assets
 
 
 def _predict_sentiment(text: str, sentiment_assets: Mapping[str, Any]) -> Dict[str, Any]:
