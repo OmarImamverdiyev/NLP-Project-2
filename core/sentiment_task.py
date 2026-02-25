@@ -4,7 +4,7 @@ import csv
 import random
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
@@ -35,6 +35,7 @@ random.seed(SEED)
 np.random.seed(SEED)
 
 TASK3_CUSTOM_MAX_SAMPLES_DEFAULT = 5000
+TASK3_FEATURE_SETS = ("bow", "lexicon", "bow_lexicon")
 
 
 AZ_POSITIVE = {
@@ -279,6 +280,41 @@ def _significance_of_best(
     return 1.0
 
 
+def _result_sort_key(row: Mapping[str, Any]) -> Tuple[float, float, float, float]:
+    return (
+        float(row["dev_macro_f1"]),
+        float(row["dev_accuracy"]),
+        float(row["test_macro_f1"]),
+        float(row["test_accuracy"]),
+    )
+
+
+def _best_feature_row(rows: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    return max(rows.values(), key=_result_sort_key)
+
+
+def _attach_feature_rows(
+    out: Dict[str, object],
+    prefix: str,
+    rows: Dict[str, Dict[str, Any]],
+    param_keys: Sequence[str],
+) -> None:
+    for feature_set in TASK3_FEATURE_SETS:
+        row = rows[feature_set]
+        out[f"{prefix}_{feature_set}_dev_accuracy"] = float(row["dev_accuracy"])
+        out[f"{prefix}_{feature_set}_dev_f1"] = float(row["dev_f1"])
+        out[f"{prefix}_{feature_set}_dev_macro_f1"] = float(row["dev_macro_f1"])
+        out[f"{prefix}_{feature_set}_accuracy"] = float(row["test_accuracy"])
+        out[f"{prefix}_{feature_set}_f1"] = float(row["test_f1"])
+        out[f"{prefix}_{feature_set}_macro_f1"] = float(row["test_macro_f1"])
+        for param_key in param_keys:
+            if param_key in row:
+                value = row[param_key]
+                out[f"{prefix}_{feature_set}_{param_key}"] = (
+                    float(value) if isinstance(value, (int, float)) else value
+                )
+
+
 def _stratified_split_indices(y: np.ndarray, test_ratio: float = 0.2) -> Tuple[np.ndarray, np.ndarray]:
     rng = np.random.default_rng(SEED)
     train_parts: List[np.ndarray] = []
@@ -471,98 +507,186 @@ def _run_task3_sklearn(
     xdv_lex_bin = sentiment_lexicon_binary_features(x_dev_text)
     xte_lex_bin = sentiment_lexicon_binary_features(x_test_text)
 
-    xtr_mnb = sparse.hstack([xtr_counts, sparse.csr_matrix(xtr_lex_mnb)], format="csr")
-    xdv_mnb = sparse.hstack([xdv_counts, sparse.csr_matrix(xdv_lex_mnb)], format="csr")
-    xte_mnb = sparse.hstack([xte_counts, sparse.csr_matrix(xte_lex_mnb)], format="csr")
-
     xtr_bow_bin = (xtr_counts > 0).astype(np.float32)
     xdv_bow_bin = (xdv_counts > 0).astype(np.float32)
     xte_bow_bin = (xte_counts > 0).astype(np.float32)
-    xtr_bnb = sparse.hstack([xtr_bow_bin, sparse.csr_matrix(xtr_lex_bin)], format="csr")
-    xdv_bnb = sparse.hstack([xdv_bow_bin, sparse.csr_matrix(xdv_lex_bin)], format="csr")
-    xte_bnb = sparse.hstack([xte_bow_bin, sparse.csr_matrix(xte_lex_bin)], format="csr")
+    mnb_inputs = {
+        "bow": (xtr_counts, xdv_counts, xte_counts),
+        "lexicon": (
+            sparse.csr_matrix(xtr_lex_mnb),
+            sparse.csr_matrix(xdv_lex_mnb),
+            sparse.csr_matrix(xte_lex_mnb),
+        ),
+        "bow_lexicon": (
+            sparse.hstack([xtr_counts, sparse.csr_matrix(xtr_lex_mnb)], format="csr"),
+            sparse.hstack([xdv_counts, sparse.csr_matrix(xdv_lex_mnb)], format="csr"),
+            sparse.hstack([xte_counts, sparse.csr_matrix(xte_lex_mnb)], format="csr"),
+        ),
+    }
+    bnb_inputs = {
+        "bow": (xtr_bow_bin, xdv_bow_bin, xte_bow_bin),
+        "lexicon": (
+            sparse.csr_matrix(xtr_lex_bin),
+            sparse.csr_matrix(xdv_lex_bin),
+            sparse.csr_matrix(xte_lex_bin),
+        ),
+        "bow_lexicon": (
+            sparse.hstack([xtr_bow_bin, sparse.csr_matrix(xtr_lex_bin)], format="csr"),
+            sparse.hstack([xdv_bow_bin, sparse.csr_matrix(xdv_lex_bin)], format="csr"),
+            sparse.hstack([xte_bow_bin, sparse.csr_matrix(xte_lex_bin)], format="csr"),
+        ),
+    }
+    lr_inputs = {
+        "bow": (xtr_counts, xdv_counts, xte_counts),
+        "lexicon": (
+            sparse.csr_matrix(xtr_lex_lr),
+            sparse.csr_matrix(xdv_lex_lr),
+            sparse.csr_matrix(xte_lex_lr),
+        ),
+        "bow_lexicon": (
+            sparse.hstack([xtr_counts, sparse.csr_matrix(xtr_lex_lr)], format="csr"),
+            sparse.hstack([xdv_counts, sparse.csr_matrix(xdv_lex_lr)], format="csr"),
+            sparse.hstack([xte_counts, sparse.csr_matrix(xte_lex_lr)], format="csr"),
+        ),
+    }
 
-    xtr_lr = sparse.hstack([xtr_counts, sparse.csr_matrix(xtr_lex_lr)], format="csr")
-    xdv_lr = sparse.hstack([xdv_counts, sparse.csr_matrix(xdv_lex_lr)], format="csr")
-    xte_lr = sparse.hstack([xte_counts, sparse.csr_matrix(xte_lex_lr)], format="csr")
-
-    mnb_alpha = 1.0
-    bnb_alpha = 1.0
-    lr_best_c = 1.0
-    lr_best_weight = "none"
-    mnb_dev_macro_f1 = float("-inf")
-    bnb_dev_macro_f1 = float("-inf")
-    lr_dev_macro_f1 = float("-inf")
-
-    for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
-        model = SkMultinomialNB(alpha=alpha).fit(xtr_mnb, y_train)
-        pred_dev = model.predict(xdv_mnb).astype(np.int64)
-        score = _macro_f1(y_dev, pred_dev)
-        if score > mnb_dev_macro_f1:
-            mnb_dev_macro_f1 = score
-            mnb_alpha = alpha
-
-    for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
-        model = SkBernoulliNB(alpha=alpha, binarize=0.0).fit(xtr_bnb, y_train)
-        pred_dev = model.predict(xdv_bnb).astype(np.int64)
-        score = _macro_f1(y_dev, pred_dev)
-        if score > bnb_dev_macro_f1:
-            bnb_dev_macro_f1 = score
-            bnb_alpha = alpha
-
-    for c in (0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0):
-        for class_weight in (None, "balanced"):
-            model = LogisticRegression(
-                C=c,
-                solver="liblinear",
-                max_iter=3000,
-                random_state=SEED,
-                class_weight=class_weight,
-            ).fit(xtr_lr, y_train)
-            pred_dev = model.predict(xdv_lr).astype(np.int64)
+    mnb_rows: Dict[str, Dict[str, Any]] = {}
+    for feature_set, (xtr, xdv, xte) in mnb_inputs.items():
+        best_alpha = 1.0
+        best_score = float("-inf")
+        best_acc = float("-inf")
+        for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
+            model = SkMultinomialNB(alpha=alpha).fit(xtr, y_train)
+            pred_dev = model.predict(xdv).astype(np.int64)
             score = _macro_f1(y_dev, pred_dev)
-            if score > lr_dev_macro_f1:
-                lr_dev_macro_f1 = score
-                lr_best_c = c
-                lr_best_weight = "balanced" if class_weight == "balanced" else "none"
+            acc = float((pred_dev == y_dev).mean())
+            if score > best_score or (score == best_score and acc > best_acc):
+                best_score = score
+                best_acc = acc
+                best_alpha = alpha
+        model = SkMultinomialNB(alpha=best_alpha).fit(xtr, y_train)
+        pred_dev = model.predict(xdv).astype(np.int64)
+        pred_test = model.predict(xte).astype(np.int64)
+        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+        mnb_rows[feature_set] = {
+            "feature_set": feature_set,
+            "alpha": float(best_alpha),
+            "dev_accuracy": float(dev_metrics["accuracy"]),
+            "dev_f1": float(dev_metrics["f1"]),
+            "dev_macro_f1": float(dev_metrics["macro_f1"]),
+            "test_accuracy": float(test_metrics["accuracy"]),
+            "test_f1": float(test_metrics["f1"]),
+            "test_macro_f1": float(test_metrics["macro_f1"]),
+            "pred_dev": pred_dev,
+            "pred_test": pred_test,
+        }
 
-    mnb = SkMultinomialNB(alpha=mnb_alpha).fit(xtr_mnb, y_train)
-    pred_mnb_dev = mnb.predict(xdv_mnb).astype(np.int64)
-    pred_mnb = mnb.predict(xte_mnb).astype(np.int64)
-    m_mnb_dev = _metrics_with_macro_f1(y_dev, pred_mnb_dev)
-    m_mnb = _metrics_with_macro_f1(y_test, pred_mnb)
+    bnb_rows: Dict[str, Dict[str, Any]] = {}
+    for feature_set, (xtr, xdv, xte) in bnb_inputs.items():
+        best_alpha = 1.0
+        best_score = float("-inf")
+        best_acc = float("-inf")
+        for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
+            model = SkBernoulliNB(alpha=alpha, binarize=0.0).fit(xtr, y_train)
+            pred_dev = model.predict(xdv).astype(np.int64)
+            score = _macro_f1(y_dev, pred_dev)
+            acc = float((pred_dev == y_dev).mean())
+            if score > best_score or (score == best_score and acc > best_acc):
+                best_score = score
+                best_acc = acc
+                best_alpha = alpha
+        model = SkBernoulliNB(alpha=best_alpha, binarize=0.0).fit(xtr, y_train)
+        pred_dev = model.predict(xdv).astype(np.int64)
+        pred_test = model.predict(xte).astype(np.int64)
+        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+        bnb_rows[feature_set] = {
+            "feature_set": feature_set,
+            "alpha": float(best_alpha),
+            "dev_accuracy": float(dev_metrics["accuracy"]),
+            "dev_f1": float(dev_metrics["f1"]),
+            "dev_macro_f1": float(dev_metrics["macro_f1"]),
+            "test_accuracy": float(test_metrics["accuracy"]),
+            "test_f1": float(test_metrics["f1"]),
+            "test_macro_f1": float(test_metrics["macro_f1"]),
+            "pred_dev": pred_dev,
+            "pred_test": pred_test,
+        }
 
-    bnb = SkBernoulliNB(alpha=bnb_alpha, binarize=0.0).fit(xtr_bnb, y_train)
-    pred_bnb_dev = bnb.predict(xdv_bnb).astype(np.int64)
-    pred_bnb = bnb.predict(xte_bnb).astype(np.int64)
-    m_bnb_dev = _metrics_with_macro_f1(y_dev, pred_bnb_dev)
-    m_bnb = _metrics_with_macro_f1(y_test, pred_bnb)
+    lr_rows: Dict[str, Dict[str, Any]] = {}
+    for feature_set, (xtr, xdv, xte) in lr_inputs.items():
+        best_c = 1.0
+        best_weight = "none"
+        best_score = float("-inf")
+        best_acc = float("-inf")
+        for c in (0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0):
+            for class_weight in (None, "balanced"):
+                model = LogisticRegression(
+                    C=c,
+                    solver="liblinear",
+                    max_iter=3000,
+                    random_state=SEED,
+                    class_weight=class_weight,
+                ).fit(xtr, y_train)
+                pred_dev = model.predict(xdv).astype(np.int64)
+                score = _macro_f1(y_dev, pred_dev)
+                acc = float((pred_dev == y_dev).mean())
+                if score > best_score or (score == best_score and acc > best_acc):
+                    best_score = score
+                    best_acc = acc
+                    best_c = c
+                    best_weight = "balanced" if class_weight == "balanced" else "none"
+        model = LogisticRegression(
+            C=best_c,
+            solver="liblinear",
+            max_iter=3000,
+            random_state=SEED,
+            class_weight=None if best_weight == "none" else "balanced",
+        ).fit(xtr, y_train)
+        pred_dev = model.predict(xdv).astype(np.int64)
+        pred_test = model.predict(xte).astype(np.int64)
+        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+        lr_rows[feature_set] = {
+            "feature_set": feature_set,
+            "c": float(best_c),
+            "class_weight": best_weight,
+            "dev_accuracy": float(dev_metrics["accuracy"]),
+            "dev_f1": float(dev_metrics["f1"]),
+            "dev_macro_f1": float(dev_metrics["macro_f1"]),
+            "test_accuracy": float(test_metrics["accuracy"]),
+            "test_f1": float(test_metrics["f1"]),
+            "test_macro_f1": float(test_metrics["macro_f1"]),
+            "pred_dev": pred_dev,
+            "pred_test": pred_test,
+        }
 
-    lr = LogisticRegression(
-        C=lr_best_c,
-        solver="liblinear",
-        max_iter=3000,
-        random_state=SEED,
-        class_weight=None if lr_best_weight == "none" else "balanced",
-    ).fit(xtr_lr, y_train)
-    pred_lr_dev = lr.predict(xdv_lr).astype(np.int64)
-    pred_lr = lr.predict(xte_lr).astype(np.int64)
-    m_lr_dev = _metrics_with_macro_f1(y_dev, pred_lr_dev)
-    m_lr = _metrics_with_macro_f1(y_test, pred_lr)
+    best_mnb = _best_feature_row(mnb_rows)
+    best_bnb = _best_feature_row(bnb_rows)
+    best_lr = _best_feature_row(lr_rows)
+    model_rows = {
+        "multinomial_nb": best_mnb,
+        "bernoulli_nb": best_bnb,
+        "logistic_regression": best_lr,
+    }
 
+    pred_mnb = np.asarray(best_mnb["pred_test"], dtype=np.int64)
+    pred_bnb = np.asarray(best_bnb["pred_test"], dtype=np.int64)
+    pred_lr = np.asarray(best_lr["pred_test"], dtype=np.int64)
     p_lr_vs_mnb = mcnemar_exact_p(y_test, pred_lr, pred_mnb)
     p_lr_vs_bnb = mcnemar_exact_p(y_test, pred_lr, pred_bnb)
     p_mnb_vs_bnb = mcnemar_exact_p(y_test, pred_mnb, pred_bnb)
 
     macro_scores = {
-        "multinomial_nb": m_mnb["macro_f1"],
-        "bernoulli_nb": m_bnb["macro_f1"],
-        "logistic_regression": m_lr["macro_f1"],
+        "multinomial_nb": float(best_mnb["test_macro_f1"]),
+        "bernoulli_nb": float(best_bnb["test_macro_f1"]),
+        "logistic_regression": float(best_lr["test_macro_f1"]),
     }
     accuracies = {
-        "multinomial_nb": m_mnb["accuracy"],
-        "bernoulli_nb": m_bnb["accuracy"],
-        "logistic_regression": m_lr["accuracy"],
+        "multinomial_nb": float(best_mnb["test_accuracy"]),
+        "bernoulli_nb": float(best_bnb["test_accuracy"]),
+        "logistic_regression": float(best_lr["test_accuracy"]),
     }
     best_model = _select_best(macro_scores, accuracies)
     pvals = {
@@ -572,48 +696,60 @@ def _run_task3_sklearn(
     }
     pvals_norm = {tuple(sorted(k)): v for k, v in pvals.items()}
     best_significant = _significance_of_best(best_model, accuracies, pvals_norm, alpha=0.05)
+    best_feature_set = str(model_rows[best_model]["feature_set"])
 
-    return {
+    out: Dict[str, object] = {
         "num_samples": float(len(texts)),
         "positive_ratio": float(y.mean()),
         "train_examples": float(len(y_train)),
         "dev_examples": float(len(y_dev)),
         "test_examples": float(len(y_test)),
         "num_features_bow": float(len(vectorizer.vocabulary_)),
+        "num_features_lexicon": 6.0,
+        "feature_sets_compared_count": float(len(TASK3_FEATURE_SETS)),
         "data_source_code": 0.0,
         "data_source": data_source,
         "uses_sklearn_models": 1.0,
-        "mnb_best_alpha": float(mnb_alpha),
-        "bnb_best_alpha": float(bnb_alpha),
-        "lr_best_c": float(lr_best_c),
-        "lr_class_weight_balanced": 1.0 if lr_best_weight == "balanced" else 0.0,
-        "mnb_cv_macro_f1": float(mnb_dev_macro_f1),
-        "bnb_cv_macro_f1": float(bnb_dev_macro_f1),
-        "lr_cv_macro_f1": float(lr_dev_macro_f1),
-        "mnb_dev_accuracy": m_mnb_dev["accuracy"],
-        "mnb_dev_f1": m_mnb_dev["f1"],
-        "mnb_dev_macro_f1": m_mnb_dev["macro_f1"],
-        "bnb_dev_accuracy": m_bnb_dev["accuracy"],
-        "bnb_dev_f1": m_bnb_dev["f1"],
-        "bnb_dev_macro_f1": m_bnb_dev["macro_f1"],
-        "lr_dev_accuracy": m_lr_dev["accuracy"],
-        "lr_dev_f1": m_lr_dev["f1"],
-        "lr_dev_macro_f1": m_lr_dev["macro_f1"],
-        "mnb_accuracy": m_mnb["accuracy"],
-        "mnb_f1": m_mnb["f1"],
-        "mnb_macro_f1": m_mnb["macro_f1"],
-        "bnb_accuracy": m_bnb["accuracy"],
-        "bnb_f1": m_bnb["f1"],
-        "bnb_macro_f1": m_bnb["macro_f1"],
-        "lr_accuracy": m_lr["accuracy"],
-        "lr_f1": m_lr["f1"],
-        "lr_macro_f1": m_lr["macro_f1"],
+        "mnb_best_alpha": float(best_mnb["alpha"]),
+        "bnb_best_alpha": float(best_bnb["alpha"]),
+        "lr_best_c": float(best_lr["c"]),
+        "lr_class_weight_balanced": 1.0 if best_lr["class_weight"] == "balanced" else 0.0,
+        "mnb_best_feature_set": str(best_mnb["feature_set"]),
+        "bnb_best_feature_set": str(best_bnb["feature_set"]),
+        "lr_best_feature_set": str(best_lr["feature_set"]),
+        "mnb_cv_macro_f1": float(best_mnb["dev_macro_f1"]),
+        "bnb_cv_macro_f1": float(best_bnb["dev_macro_f1"]),
+        "lr_cv_macro_f1": float(best_lr["dev_macro_f1"]),
+        "mnb_dev_accuracy": float(best_mnb["dev_accuracy"]),
+        "mnb_dev_f1": float(best_mnb["dev_f1"]),
+        "mnb_dev_macro_f1": float(best_mnb["dev_macro_f1"]),
+        "bnb_dev_accuracy": float(best_bnb["dev_accuracy"]),
+        "bnb_dev_f1": float(best_bnb["dev_f1"]),
+        "bnb_dev_macro_f1": float(best_bnb["dev_macro_f1"]),
+        "lr_dev_accuracy": float(best_lr["dev_accuracy"]),
+        "lr_dev_f1": float(best_lr["dev_f1"]),
+        "lr_dev_macro_f1": float(best_lr["dev_macro_f1"]),
+        "mnb_accuracy": float(best_mnb["test_accuracy"]),
+        "mnb_f1": float(best_mnb["test_f1"]),
+        "mnb_macro_f1": float(best_mnb["test_macro_f1"]),
+        "bnb_accuracy": float(best_bnb["test_accuracy"]),
+        "bnb_f1": float(best_bnb["test_f1"]),
+        "bnb_macro_f1": float(best_bnb["test_macro_f1"]),
+        "lr_accuracy": float(best_lr["test_accuracy"]),
+        "lr_f1": float(best_lr["test_f1"]),
+        "lr_macro_f1": float(best_lr["test_macro_f1"]),
         "p_lr_vs_mnb": p_lr_vs_mnb,
         "p_lr_vs_bnb": p_lr_vs_bnb,
         "p_mnb_vs_bnb": p_mnb_vs_bnb,
         "best_classifier": best_model,
+        "best_classifier_feature_set": best_feature_set,
+        "best_classifier_with_features": f"{best_model}:{best_feature_set}",
         "best_significant_vs_others_alpha0_05": best_significant,
     }
+    _attach_feature_rows(out, "mnb", mnb_rows, ("alpha",))
+    _attach_feature_rows(out, "bnb", bnb_rows, ("alpha",))
+    _attach_feature_rows(out, "lr", lr_rows, ("c", "class_weight"))
+    return out
 
 
 def _run_task3_custom(
@@ -656,91 +792,169 @@ def _run_task3_custom(
     xdv_lex_bin = sentiment_lexicon_binary_features(x_dev_text)
     xte_lex_bin = sentiment_lexicon_binary_features(x_test_text)
 
-    xtr_mnb = np.hstack([xtr_counts, xtr_lex_mnb])
-    xdv_mnb = np.hstack([xdv_counts, xdv_lex_mnb])
-    xte_mnb = np.hstack([xte_counts, xte_lex_mnb])
-    xtr_bnb = np.hstack([xtr_binary, xtr_lex_bin])
-    xdv_bnb = np.hstack([xdv_binary, xdv_lex_bin])
-    xte_bnb = np.hstack([xte_binary, xte_lex_bin])
-    xtr_lr = np.hstack([xtr_counts, xtr_lex_lr])
-    xdv_lr = np.hstack([xdv_counts, xdv_lex_lr])
-    xte_lr = np.hstack([xte_counts, xte_lex_lr])
+    mnb_inputs = {
+        "bow": (xtr_counts, xdv_counts, xte_counts),
+        "lexicon": (xtr_lex_mnb, xdv_lex_mnb, xte_lex_mnb),
+        "bow_lexicon": (
+            np.hstack([xtr_counts, xtr_lex_mnb]),
+            np.hstack([xdv_counts, xdv_lex_mnb]),
+            np.hstack([xte_counts, xte_lex_mnb]),
+        ),
+    }
+    bnb_inputs = {
+        "bow": (xtr_binary, xdv_binary, xte_binary),
+        "lexicon": (xtr_lex_bin, xdv_lex_bin, xte_lex_bin),
+        "bow_lexicon": (
+            np.hstack([xtr_binary, xtr_lex_bin]),
+            np.hstack([xdv_binary, xdv_lex_bin]),
+            np.hstack([xte_binary, xte_lex_bin]),
+        ),
+    }
+    lr_inputs = {
+        "bow": (xtr_counts, xdv_counts, xte_counts),
+        "lexicon": (xtr_lex_lr, xdv_lex_lr, xte_lex_lr),
+        "bow_lexicon": (
+            np.hstack([xtr_counts, xtr_lex_lr]),
+            np.hstack([xdv_counts, xdv_lex_lr]),
+            np.hstack([xte_counts, xte_lex_lr]),
+        ),
+    }
 
-    mnb_alpha = 1.0
-    bnb_alpha = 1.0
-    lr_best_lr = 0.2
-    lr_best_reg = 1e-4
-    mnb_dev_macro_f1 = float("-inf")
-    bnb_dev_macro_f1 = float("-inf")
-    lr_dev_macro_f1 = float("-inf")
-
-    for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
-        model = MultinomialNB(alpha=alpha).fit(xtr_mnb, y_train)
-        pred_dev = model.predict(xdv_mnb)
-        score = _macro_f1(y_dev, pred_dev)
-        if score > mnb_dev_macro_f1:
-            mnb_dev_macro_f1 = score
-            mnb_alpha = alpha
-
-    for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
-        model = BernoulliNB(alpha=alpha).fit(xtr_bnb, y_train)
-        pred_dev = model.predict(xdv_bnb)
-        score = _macro_f1(y_dev, pred_dev)
-        if score > bnb_dev_macro_f1:
-            bnb_dev_macro_f1 = score
-            bnb_alpha = alpha
-
-    for lr in (0.05, 0.1, 0.2):
-        for reg in (1e-5, 1e-4, 1e-3):
-            model = LogisticBinary(
-                lr=lr,
-                epochs=35,
-                reg_type="l2",
-                reg_strength=reg,
-            ).fit(xtr_lr, y_train)
-            pred_dev = model.predict(xdv_lr)
+    mnb_rows: Dict[str, Dict[str, Any]] = {}
+    for feature_set, (xtr, xdv, xte) in mnb_inputs.items():
+        best_alpha = 1.0
+        best_score = float("-inf")
+        best_acc = float("-inf")
+        for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
+            model = MultinomialNB(alpha=alpha).fit(xtr, y_train)
+            pred_dev = model.predict(xdv)
             score = _macro_f1(y_dev, pred_dev)
-            if score > lr_dev_macro_f1:
-                lr_dev_macro_f1 = score
-                lr_best_lr = lr
-                lr_best_reg = reg
+            acc = float((pred_dev == y_dev).mean())
+            if score > best_score or (score == best_score and acc > best_acc):
+                best_score = score
+                best_acc = acc
+                best_alpha = alpha
+        model = MultinomialNB(alpha=best_alpha).fit(xtr, y_train)
+        pred_dev = model.predict(xdv).astype(np.int64)
+        pred_test = model.predict(xte).astype(np.int64)
+        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+        mnb_rows[feature_set] = {
+            "feature_set": feature_set,
+            "alpha": float(best_alpha),
+            "dev_accuracy": float(dev_metrics["accuracy"]),
+            "dev_f1": float(dev_metrics["f1"]),
+            "dev_macro_f1": float(dev_metrics["macro_f1"]),
+            "test_accuracy": float(test_metrics["accuracy"]),
+            "test_f1": float(test_metrics["f1"]),
+            "test_macro_f1": float(test_metrics["macro_f1"]),
+            "pred_dev": pred_dev,
+            "pred_test": pred_test,
+        }
 
-    mnb = MultinomialNB(alpha=mnb_alpha).fit(xtr_mnb, y_train)
-    pred_mnb_dev = mnb.predict(xdv_mnb)
-    pred_mnb = mnb.predict(xte_mnb)
-    m_mnb_dev = _metrics_with_macro_f1(y_dev, pred_mnb_dev)
-    m_mnb = _metrics_with_macro_f1(y_test, pred_mnb)
+    bnb_rows: Dict[str, Dict[str, Any]] = {}
+    for feature_set, (xtr, xdv, xte) in bnb_inputs.items():
+        best_alpha = 1.0
+        best_score = float("-inf")
+        best_acc = float("-inf")
+        for alpha in (0.05, 0.1, 0.3, 0.5, 1.0, 2.0):
+            model = BernoulliNB(alpha=alpha).fit(xtr, y_train)
+            pred_dev = model.predict(xdv)
+            score = _macro_f1(y_dev, pred_dev)
+            acc = float((pred_dev == y_dev).mean())
+            if score > best_score or (score == best_score and acc > best_acc):
+                best_score = score
+                best_acc = acc
+                best_alpha = alpha
+        model = BernoulliNB(alpha=best_alpha).fit(xtr, y_train)
+        pred_dev = model.predict(xdv).astype(np.int64)
+        pred_test = model.predict(xte).astype(np.int64)
+        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+        bnb_rows[feature_set] = {
+            "feature_set": feature_set,
+            "alpha": float(best_alpha),
+            "dev_accuracy": float(dev_metrics["accuracy"]),
+            "dev_f1": float(dev_metrics["f1"]),
+            "dev_macro_f1": float(dev_metrics["macro_f1"]),
+            "test_accuracy": float(test_metrics["accuracy"]),
+            "test_f1": float(test_metrics["f1"]),
+            "test_macro_f1": float(test_metrics["macro_f1"]),
+            "pred_dev": pred_dev,
+            "pred_test": pred_test,
+        }
 
-    bnb = BernoulliNB(alpha=bnb_alpha).fit(xtr_bnb, y_train)
-    pred_bnb_dev = bnb.predict(xdv_bnb)
-    pred_bnb = bnb.predict(xte_bnb)
-    m_bnb_dev = _metrics_with_macro_f1(y_dev, pred_bnb_dev)
-    m_bnb = _metrics_with_macro_f1(y_test, pred_bnb)
+    lr_rows: Dict[str, Dict[str, Any]] = {}
+    for feature_set, (xtr, xdv, xte) in lr_inputs.items():
+        best_lr = 0.2
+        best_reg = 1e-4
+        best_score = float("-inf")
+        best_acc = float("-inf")
+        for lr in (0.05, 0.1, 0.2):
+            for reg in (1e-5, 1e-4, 1e-3):
+                model = LogisticBinary(
+                    lr=lr,
+                    epochs=35,
+                    reg_type="l2",
+                    reg_strength=reg,
+                ).fit(xtr, y_train)
+                pred_dev = model.predict(xdv)
+                score = _macro_f1(y_dev, pred_dev)
+                acc = float((pred_dev == y_dev).mean())
+                if score > best_score or (score == best_score and acc > best_acc):
+                    best_score = score
+                    best_acc = acc
+                    best_lr = lr
+                    best_reg = reg
+        model = LogisticBinary(
+            lr=best_lr,
+            epochs=35,
+            reg_type="l2",
+            reg_strength=best_reg,
+        ).fit(xtr, y_train)
+        pred_dev = model.predict(xdv).astype(np.int64)
+        pred_test = model.predict(xte).astype(np.int64)
+        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+        lr_rows[feature_set] = {
+            "feature_set": feature_set,
+            "lr": float(best_lr),
+            "reg_strength": float(best_reg),
+            "dev_accuracy": float(dev_metrics["accuracy"]),
+            "dev_f1": float(dev_metrics["f1"]),
+            "dev_macro_f1": float(dev_metrics["macro_f1"]),
+            "test_accuracy": float(test_metrics["accuracy"]),
+            "test_f1": float(test_metrics["f1"]),
+            "test_macro_f1": float(test_metrics["macro_f1"]),
+            "pred_dev": pred_dev,
+            "pred_test": pred_test,
+        }
 
-    lr = LogisticBinary(
-        lr=lr_best_lr,
-        epochs=35,
-        reg_type="l2",
-        reg_strength=lr_best_reg,
-    ).fit(xtr_lr, y_train)
-    pred_lr_dev = lr.predict(xdv_lr)
-    pred_lr = lr.predict(xte_lr)
-    m_lr_dev = _metrics_with_macro_f1(y_dev, pred_lr_dev)
-    m_lr = _metrics_with_macro_f1(y_test, pred_lr)
+    best_mnb = _best_feature_row(mnb_rows)
+    best_bnb = _best_feature_row(bnb_rows)
+    best_lr = _best_feature_row(lr_rows)
+    model_rows = {
+        "multinomial_nb": best_mnb,
+        "bernoulli_nb": best_bnb,
+        "logistic_regression": best_lr,
+    }
 
+    pred_mnb = np.asarray(best_mnb["pred_test"], dtype=np.int64)
+    pred_bnb = np.asarray(best_bnb["pred_test"], dtype=np.int64)
+    pred_lr = np.asarray(best_lr["pred_test"], dtype=np.int64)
     p_lr_vs_mnb = mcnemar_exact_p(y_test, pred_lr, pred_mnb)
     p_lr_vs_bnb = mcnemar_exact_p(y_test, pred_lr, pred_bnb)
     p_mnb_vs_bnb = mcnemar_exact_p(y_test, pred_mnb, pred_bnb)
 
     macro_scores = {
-        "multinomial_nb": m_mnb["macro_f1"],
-        "bernoulli_nb": m_bnb["macro_f1"],
-        "logistic_regression": m_lr["macro_f1"],
+        "multinomial_nb": float(best_mnb["test_macro_f1"]),
+        "bernoulli_nb": float(best_bnb["test_macro_f1"]),
+        "logistic_regression": float(best_lr["test_macro_f1"]),
     }
     accuracies = {
-        "multinomial_nb": m_mnb["accuracy"],
-        "bernoulli_nb": m_bnb["accuracy"],
-        "logistic_regression": m_lr["accuracy"],
+        "multinomial_nb": float(best_mnb["test_accuracy"]),
+        "bernoulli_nb": float(best_bnb["test_accuracy"]),
+        "logistic_regression": float(best_lr["test_accuracy"]),
     }
     best_model = _select_best(macro_scores, accuracies)
     pvals = {
@@ -750,48 +964,60 @@ def _run_task3_custom(
     }
     pvals_norm = {tuple(sorted(k)): v for k, v in pvals.items()}
     best_significant = _significance_of_best(best_model, accuracies, pvals_norm, alpha=0.05)
+    best_feature_set = str(model_rows[best_model]["feature_set"])
 
-    return {
+    out: Dict[str, object] = {
         "num_samples": float(len(texts)),
         "positive_ratio": float(y.mean()),
         "train_examples": float(len(y_train)),
         "dev_examples": float(len(y_dev)),
         "test_examples": float(len(y_test)),
         "num_features_bow": float(len(vocab)),
+        "num_features_lexicon": 6.0,
+        "feature_sets_compared_count": float(len(TASK3_FEATURE_SETS)),
         "data_source_code": 0.0,
         "data_source": data_source,
         "uses_sklearn_models": 0.0,
-        "mnb_best_alpha": float(mnb_alpha),
-        "bnb_best_alpha": float(bnb_alpha),
-        "lr_best_lr": float(lr_best_lr),
-        "lr_best_reg_strength": float(lr_best_reg),
-        "mnb_cv_macro_f1": float(mnb_dev_macro_f1),
-        "bnb_cv_macro_f1": float(bnb_dev_macro_f1),
-        "lr_cv_macro_f1": float(lr_dev_macro_f1),
-        "mnb_dev_accuracy": m_mnb_dev["accuracy"],
-        "mnb_dev_f1": m_mnb_dev["f1"],
-        "mnb_dev_macro_f1": m_mnb_dev["macro_f1"],
-        "bnb_dev_accuracy": m_bnb_dev["accuracy"],
-        "bnb_dev_f1": m_bnb_dev["f1"],
-        "bnb_dev_macro_f1": m_bnb_dev["macro_f1"],
-        "lr_dev_accuracy": m_lr_dev["accuracy"],
-        "lr_dev_f1": m_lr_dev["f1"],
-        "lr_dev_macro_f1": m_lr_dev["macro_f1"],
-        "mnb_accuracy": m_mnb["accuracy"],
-        "mnb_f1": m_mnb["f1"],
-        "mnb_macro_f1": m_mnb["macro_f1"],
-        "bnb_accuracy": m_bnb["accuracy"],
-        "bnb_f1": m_bnb["f1"],
-        "bnb_macro_f1": m_bnb["macro_f1"],
-        "lr_accuracy": m_lr["accuracy"],
-        "lr_f1": m_lr["f1"],
-        "lr_macro_f1": m_lr["macro_f1"],
+        "mnb_best_alpha": float(best_mnb["alpha"]),
+        "bnb_best_alpha": float(best_bnb["alpha"]),
+        "lr_best_lr": float(best_lr["lr"]),
+        "lr_best_reg_strength": float(best_lr["reg_strength"]),
+        "mnb_best_feature_set": str(best_mnb["feature_set"]),
+        "bnb_best_feature_set": str(best_bnb["feature_set"]),
+        "lr_best_feature_set": str(best_lr["feature_set"]),
+        "mnb_cv_macro_f1": float(best_mnb["dev_macro_f1"]),
+        "bnb_cv_macro_f1": float(best_bnb["dev_macro_f1"]),
+        "lr_cv_macro_f1": float(best_lr["dev_macro_f1"]),
+        "mnb_dev_accuracy": float(best_mnb["dev_accuracy"]),
+        "mnb_dev_f1": float(best_mnb["dev_f1"]),
+        "mnb_dev_macro_f1": float(best_mnb["dev_macro_f1"]),
+        "bnb_dev_accuracy": float(best_bnb["dev_accuracy"]),
+        "bnb_dev_f1": float(best_bnb["dev_f1"]),
+        "bnb_dev_macro_f1": float(best_bnb["dev_macro_f1"]),
+        "lr_dev_accuracy": float(best_lr["dev_accuracy"]),
+        "lr_dev_f1": float(best_lr["dev_f1"]),
+        "lr_dev_macro_f1": float(best_lr["dev_macro_f1"]),
+        "mnb_accuracy": float(best_mnb["test_accuracy"]),
+        "mnb_f1": float(best_mnb["test_f1"]),
+        "mnb_macro_f1": float(best_mnb["test_macro_f1"]),
+        "bnb_accuracy": float(best_bnb["test_accuracy"]),
+        "bnb_f1": float(best_bnb["test_f1"]),
+        "bnb_macro_f1": float(best_bnb["test_macro_f1"]),
+        "lr_accuracy": float(best_lr["test_accuracy"]),
+        "lr_f1": float(best_lr["test_f1"]),
+        "lr_macro_f1": float(best_lr["test_macro_f1"]),
         "p_lr_vs_mnb": p_lr_vs_mnb,
         "p_lr_vs_bnb": p_lr_vs_bnb,
         "p_mnb_vs_bnb": p_mnb_vs_bnb,
         "best_classifier": best_model,
+        "best_classifier_feature_set": best_feature_set,
+        "best_classifier_with_features": f"{best_model}:{best_feature_set}",
         "best_significant_vs_others_alpha0_05": best_significant,
     }
+    _attach_feature_rows(out, "mnb", mnb_rows, ("alpha",))
+    _attach_feature_rows(out, "bnb", bnb_rows, ("alpha",))
+    _attach_feature_rows(out, "lr", lr_rows, ("lr", "reg_strength"))
+    return out
 
 
 def run_task3(

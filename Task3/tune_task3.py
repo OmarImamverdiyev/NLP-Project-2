@@ -39,6 +39,7 @@ if SKLEARN_AVAILABLE:
     from sklearn.naive_bayes import MultinomialNB as SkMultinomialNB
 
 MetricValue = float | int | str
+FEATURE_SETS = ("bow", "lexicon", "bow_lexicon")
 
 
 def parse_float_list(raw: str) -> List[float]:
@@ -140,6 +141,8 @@ def topk_by_metric(
 
 def fmt_result(result: Dict[str, MetricValue]) -> str:
     fields = [f"model={result['model']}"]
+    if "feature_set" in result:
+        fields.append(f"feature_set={result['feature_set']}")
     for key in (
         "alpha",
         "c",
@@ -227,84 +230,118 @@ def run_sklearn_tuning(
     xdv_lex_bin = sentiment_lexicon_binary_features(x_dev_text)
     xte_lex_bin = sentiment_lexicon_binary_features(x_test_text)
 
-    xtr_mnb = sparse.hstack([xtr_counts, sparse.csr_matrix(xtr_lex_mnb)], format="csr")
-    xdv_mnb = sparse.hstack([xdv_counts, sparse.csr_matrix(xdv_lex_mnb)], format="csr")
-    xte_mnb = sparse.hstack([xte_counts, sparse.csr_matrix(xte_lex_mnb)], format="csr")
-
     xtr_bow_bin = (xtr_counts > 0).astype(np.float32)
     xdv_bow_bin = (xdv_counts > 0).astype(np.float32)
     xte_bow_bin = (xte_counts > 0).astype(np.float32)
-    xtr_bnb = sparse.hstack([xtr_bow_bin, sparse.csr_matrix(xtr_lex_bin)], format="csr")
-    xdv_bnb = sparse.hstack([xdv_bow_bin, sparse.csr_matrix(xdv_lex_bin)], format="csr")
-    xte_bnb = sparse.hstack([xte_bow_bin, sparse.csr_matrix(xte_lex_bin)], format="csr")
-
-    xtr_lr = sparse.hstack([xtr_counts, sparse.csr_matrix(xtr_lex_lr)], format="csr")
-    xdv_lr = sparse.hstack([xdv_counts, sparse.csr_matrix(xdv_lex_lr)], format="csr")
-    xte_lr = sparse.hstack([xte_counts, sparse.csr_matrix(xte_lex_lr)], format="csr")
+    mnb_inputs = {
+        "bow": (xtr_counts, xdv_counts, xte_counts),
+        "lexicon": (
+            sparse.csr_matrix(xtr_lex_mnb),
+            sparse.csr_matrix(xdv_lex_mnb),
+            sparse.csr_matrix(xte_lex_mnb),
+        ),
+        "bow_lexicon": (
+            sparse.hstack([xtr_counts, sparse.csr_matrix(xtr_lex_mnb)], format="csr"),
+            sparse.hstack([xdv_counts, sparse.csr_matrix(xdv_lex_mnb)], format="csr"),
+            sparse.hstack([xte_counts, sparse.csr_matrix(xte_lex_mnb)], format="csr"),
+        ),
+    }
+    bnb_inputs = {
+        "bow": (xtr_bow_bin, xdv_bow_bin, xte_bow_bin),
+        "lexicon": (
+            sparse.csr_matrix(xtr_lex_bin),
+            sparse.csr_matrix(xdv_lex_bin),
+            sparse.csr_matrix(xte_lex_bin),
+        ),
+        "bow_lexicon": (
+            sparse.hstack([xtr_bow_bin, sparse.csr_matrix(xtr_lex_bin)], format="csr"),
+            sparse.hstack([xdv_bow_bin, sparse.csr_matrix(xdv_lex_bin)], format="csr"),
+            sparse.hstack([xte_bow_bin, sparse.csr_matrix(xte_lex_bin)], format="csr"),
+        ),
+    }
+    lr_inputs = {
+        "bow": (xtr_counts, xdv_counts, xte_counts),
+        "lexicon": (
+            sparse.csr_matrix(xtr_lex_lr),
+            sparse.csr_matrix(xdv_lex_lr),
+            sparse.csr_matrix(xte_lex_lr),
+        ),
+        "bow_lexicon": (
+            sparse.hstack([xtr_counts, sparse.csr_matrix(xtr_lex_lr)], format="csr"),
+            sparse.hstack([xdv_counts, sparse.csr_matrix(xdv_lex_lr)], format="csr"),
+            sparse.hstack([xte_counts, sparse.csr_matrix(xte_lex_lr)], format="csr"),
+        ),
+    }
 
     mnb_results: List[Dict[str, MetricValue]] = []
-    for alpha in mnb_alphas:
-        model = SkMultinomialNB(alpha=alpha).fit(xtr_mnb, y_train)
-        pred_dev = model.predict(xdv_mnb).astype(np.int64)
-        pred_test = model.predict(xte_mnb).astype(np.int64)
-        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
-        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
-        row: Dict[str, MetricValue] = {
-            "model": "multinomial_nb",
-            "alpha": float(alpha),
-            "dev_accuracy": float(dev_metrics["accuracy"]),
-            "dev_f1": float(dev_metrics["f1"]),
-            "dev_macro_f1": float(dev_metrics["macro_f1"]),
-            "test_accuracy": float(test_metrics["accuracy"]),
-            "test_f1": float(test_metrics["f1"]),
-            "test_macro_f1": float(test_metrics["macro_f1"]),
-        }
-        mnb_results.append(row)
+    for feature_set, (xtr, xdv, xte) in mnb_inputs.items():
+        for alpha in mnb_alphas:
+            model = SkMultinomialNB(alpha=alpha).fit(xtr, y_train)
+            pred_dev = model.predict(xdv).astype(np.int64)
+            pred_test = model.predict(xte).astype(np.int64)
+            dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+            test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+            row: Dict[str, MetricValue] = {
+                "model": "multinomial_nb",
+                "feature_set": feature_set,
+                "alpha": float(alpha),
+                "dev_accuracy": float(dev_metrics["accuracy"]),
+                "dev_f1": float(dev_metrics["f1"]),
+                "dev_macro_f1": float(dev_metrics["macro_f1"]),
+                "test_accuracy": float(test_metrics["accuracy"]),
+                "test_f1": float(test_metrics["f1"]),
+                "test_macro_f1": float(test_metrics["macro_f1"]),
+            }
+            mnb_results.append(row)
 
     bnb_results: List[Dict[str, MetricValue]] = []
-    for alpha in bnb_alphas:
-        model = SkBernoulliNB(alpha=alpha, binarize=0.0).fit(xtr_bnb, y_train)
-        pred_dev = model.predict(xdv_bnb).astype(np.int64)
-        pred_test = model.predict(xte_bnb).astype(np.int64)
-        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
-        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
-        row = {
-            "model": "bernoulli_nb",
-            "alpha": float(alpha),
-            "dev_accuracy": float(dev_metrics["accuracy"]),
-            "dev_f1": float(dev_metrics["f1"]),
-            "dev_macro_f1": float(dev_metrics["macro_f1"]),
-            "test_accuracy": float(test_metrics["accuracy"]),
-            "test_f1": float(test_metrics["f1"]),
-            "test_macro_f1": float(test_metrics["macro_f1"]),
-        }
-        bnb_results.append(row)
+    for feature_set, (xtr, xdv, xte) in bnb_inputs.items():
+        for alpha in bnb_alphas:
+            model = SkBernoulliNB(alpha=alpha, binarize=0.0).fit(xtr, y_train)
+            pred_dev = model.predict(xdv).astype(np.int64)
+            pred_test = model.predict(xte).astype(np.int64)
+            dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+            test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+            row = {
+                "model": "bernoulli_nb",
+                "feature_set": feature_set,
+                "alpha": float(alpha),
+                "dev_accuracy": float(dev_metrics["accuracy"]),
+                "dev_f1": float(dev_metrics["f1"]),
+                "dev_macro_f1": float(dev_metrics["macro_f1"]),
+                "test_accuracy": float(test_metrics["accuracy"]),
+                "test_f1": float(test_metrics["f1"]),
+                "test_macro_f1": float(test_metrics["macro_f1"]),
+            }
+            bnb_results.append(row)
 
     lr_results: List[Dict[str, MetricValue]] = []
-    for c, class_weight in product(lr_c_values, class_weights):
-        model = LogisticRegression(
-            C=float(c),
-            solver="liblinear",
-            max_iter=3000,
-            random_state=SEED,
-            class_weight=None if class_weight == "none" else "balanced",
-        ).fit(xtr_lr, y_train)
-        pred_dev = model.predict(xdv_lr).astype(np.int64)
-        pred_test = model.predict(xte_lr).astype(np.int64)
-        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
-        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
-        row = {
-            "model": "logistic_regression",
-            "c": float(c),
-            "class_weight": class_weight,
-            "dev_accuracy": float(dev_metrics["accuracy"]),
-            "dev_f1": float(dev_metrics["f1"]),
-            "dev_macro_f1": float(dev_metrics["macro_f1"]),
-            "test_accuracy": float(test_metrics["accuracy"]),
-            "test_f1": float(test_metrics["f1"]),
-            "test_macro_f1": float(test_metrics["macro_f1"]),
-        }
-        lr_results.append(row)
+    for feature_set, (xtr, xdv, xte) in lr_inputs.items():
+        for c, class_weight in product(lr_c_values, class_weights):
+            model = LogisticRegression(
+                C=float(c),
+                solver="liblinear",
+                max_iter=3000,
+                random_state=SEED,
+                class_weight=None if class_weight == "none" else "balanced",
+            ).fit(xtr, y_train)
+            pred_dev = model.predict(xdv).astype(np.int64)
+            pred_test = model.predict(xte).astype(np.int64)
+            dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+            test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+            row = {
+                "model": "logistic_regression",
+                "feature_set": feature_set,
+                "c": float(c),
+                "class_weight": class_weight,
+                "dev_accuracy": float(dev_metrics["accuracy"]),
+                "dev_f1": float(dev_metrics["f1"]),
+                "dev_macro_f1": float(dev_metrics["macro_f1"]),
+                "test_accuracy": float(test_metrics["accuracy"]),
+                "test_f1": float(test_metrics["f1"]),
+                "test_macro_f1": float(test_metrics["macro_f1"]),
+            }
+            lr_results.append(row)
 
     best_mnb = best_by_metric(mnb_results, selection_metric)
     best_bnb = best_by_metric(bnb_results, selection_metric)
@@ -322,6 +359,8 @@ def run_sklearn_tuning(
             "vectorizer_min_df": int(min_df),
             "vectorizer_max_features": int(max_features),
             "vocab_size": int(len(vectorizer.vocabulary_)),
+            "lexicon_feature_count": 6,
+            "feature_sets_compared": list(FEATURE_SETS),
         },
         "search": {
             "selection_metric": selection_metric,
@@ -396,90 +435,112 @@ def run_custom_tuning(
     xdv_lex_bin = sentiment_lexicon_binary_features(x_dev_text)
     xte_lex_bin = sentiment_lexicon_binary_features(x_test_text)
 
-    xtr_mnb = np.hstack([xtr_counts, xtr_lex_mnb])
-    xdv_mnb = np.hstack([xdv_counts, xdv_lex_mnb])
-    xte_mnb = np.hstack([xte_counts, xte_lex_mnb])
-
-    xtr_bnb = np.hstack([xtr_binary, xtr_lex_bin])
-    xdv_bnb = np.hstack([xdv_binary, xdv_lex_bin])
-    xte_bnb = np.hstack([xte_binary, xte_lex_bin])
-
-    xtr_lr = np.hstack([xtr_counts, xtr_lex_lr])
-    xdv_lr = np.hstack([xdv_counts, xdv_lex_lr])
-    xte_lr = np.hstack([xte_counts, xte_lex_lr])
+    mnb_inputs = {
+        "bow": (xtr_counts, xdv_counts, xte_counts),
+        "lexicon": (xtr_lex_mnb, xdv_lex_mnb, xte_lex_mnb),
+        "bow_lexicon": (
+            np.hstack([xtr_counts, xtr_lex_mnb]),
+            np.hstack([xdv_counts, xdv_lex_mnb]),
+            np.hstack([xte_counts, xte_lex_mnb]),
+        ),
+    }
+    bnb_inputs = {
+        "bow": (xtr_binary, xdv_binary, xte_binary),
+        "lexicon": (xtr_lex_bin, xdv_lex_bin, xte_lex_bin),
+        "bow_lexicon": (
+            np.hstack([xtr_binary, xtr_lex_bin]),
+            np.hstack([xdv_binary, xdv_lex_bin]),
+            np.hstack([xte_binary, xte_lex_bin]),
+        ),
+    }
+    lr_inputs = {
+        "bow": (xtr_counts, xdv_counts, xte_counts),
+        "lexicon": (xtr_lex_lr, xdv_lex_lr, xte_lex_lr),
+        "bow_lexicon": (
+            np.hstack([xtr_counts, xtr_lex_lr]),
+            np.hstack([xdv_counts, xdv_lex_lr]),
+            np.hstack([xte_counts, xte_lex_lr]),
+        ),
+    }
 
     mnb_results: List[Dict[str, MetricValue]] = []
-    for alpha in mnb_alphas:
-        model = MultinomialNB(alpha=alpha).fit(xtr_mnb, y_train)
-        pred_dev = model.predict(xdv_mnb)
-        pred_test = model.predict(xte_mnb)
-        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
-        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
-        mnb_results.append(
-            {
-                "model": "multinomial_nb",
-                "alpha": float(alpha),
-                "dev_accuracy": float(dev_metrics["accuracy"]),
-                "dev_f1": float(dev_metrics["f1"]),
-                "dev_macro_f1": float(dev_metrics["macro_f1"]),
-                "test_accuracy": float(test_metrics["accuracy"]),
-                "test_f1": float(test_metrics["f1"]),
-                "test_macro_f1": float(test_metrics["macro_f1"]),
-            }
-        )
+    for feature_set, (xtr, xdv, xte) in mnb_inputs.items():
+        for alpha in mnb_alphas:
+            model = MultinomialNB(alpha=alpha).fit(xtr, y_train)
+            pred_dev = model.predict(xdv)
+            pred_test = model.predict(xte)
+            dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+            test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+            mnb_results.append(
+                {
+                    "model": "multinomial_nb",
+                    "feature_set": feature_set,
+                    "alpha": float(alpha),
+                    "dev_accuracy": float(dev_metrics["accuracy"]),
+                    "dev_f1": float(dev_metrics["f1"]),
+                    "dev_macro_f1": float(dev_metrics["macro_f1"]),
+                    "test_accuracy": float(test_metrics["accuracy"]),
+                    "test_f1": float(test_metrics["f1"]),
+                    "test_macro_f1": float(test_metrics["macro_f1"]),
+                }
+            )
 
     bnb_results: List[Dict[str, MetricValue]] = []
-    for alpha in bnb_alphas:
-        model = BernoulliNB(alpha=alpha).fit(xtr_bnb, y_train)
-        pred_dev = model.predict(xdv_bnb)
-        pred_test = model.predict(xte_bnb)
-        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
-        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
-        bnb_results.append(
-            {
-                "model": "bernoulli_nb",
-                "alpha": float(alpha),
-                "dev_accuracy": float(dev_metrics["accuracy"]),
-                "dev_f1": float(dev_metrics["f1"]),
-                "dev_macro_f1": float(dev_metrics["macro_f1"]),
-                "test_accuracy": float(test_metrics["accuracy"]),
-                "test_f1": float(test_metrics["f1"]),
-                "test_macro_f1": float(test_metrics["macro_f1"]),
-            }
-        )
+    for feature_set, (xtr, xdv, xte) in bnb_inputs.items():
+        for alpha in bnb_alphas:
+            model = BernoulliNB(alpha=alpha).fit(xtr, y_train)
+            pred_dev = model.predict(xdv)
+            pred_test = model.predict(xte)
+            dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+            test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+            bnb_results.append(
+                {
+                    "model": "bernoulli_nb",
+                    "feature_set": feature_set,
+                    "alpha": float(alpha),
+                    "dev_accuracy": float(dev_metrics["accuracy"]),
+                    "dev_f1": float(dev_metrics["f1"]),
+                    "dev_macro_f1": float(dev_metrics["macro_f1"]),
+                    "test_accuracy": float(test_metrics["accuracy"]),
+                    "test_f1": float(test_metrics["f1"]),
+                    "test_macro_f1": float(test_metrics["macro_f1"]),
+                }
+            )
 
     lr_results: List[Dict[str, MetricValue]] = []
-    for reg_type, lr, epochs, reg_strength in product(
-        reg_types,
-        lr_values,
-        epoch_values,
-        reg_values,
-    ):
-        model = LogisticBinary(
-            lr=float(lr),
-            epochs=int(epochs),
-            reg_type=reg_type,
-            reg_strength=float(reg_strength),
-        ).fit(xtr_lr, y_train)
-        pred_dev = model.predict(xdv_lr)
-        pred_test = model.predict(xte_lr)
-        dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
-        test_metrics = _metrics_with_macro_f1(y_test, pred_test)
-        lr_results.append(
-            {
-                "model": "logistic_regression_custom",
-                "reg_type": reg_type,
-                "lr": float(lr),
-                "epochs": int(epochs),
-                "reg_strength": float(reg_strength),
-                "dev_accuracy": float(dev_metrics["accuracy"]),
-                "dev_f1": float(dev_metrics["f1"]),
-                "dev_macro_f1": float(dev_metrics["macro_f1"]),
-                "test_accuracy": float(test_metrics["accuracy"]),
-                "test_f1": float(test_metrics["f1"]),
-                "test_macro_f1": float(test_metrics["macro_f1"]),
-            }
-        )
+    for feature_set, (xtr, xdv, xte) in lr_inputs.items():
+        for reg_type, lr, epochs, reg_strength in product(
+            reg_types,
+            lr_values,
+            epoch_values,
+            reg_values,
+        ):
+            model = LogisticBinary(
+                lr=float(lr),
+                epochs=int(epochs),
+                reg_type=reg_type,
+                reg_strength=float(reg_strength),
+            ).fit(xtr, y_train)
+            pred_dev = model.predict(xdv)
+            pred_test = model.predict(xte)
+            dev_metrics = _metrics_with_macro_f1(y_dev, pred_dev)
+            test_metrics = _metrics_with_macro_f1(y_test, pred_test)
+            lr_results.append(
+                {
+                    "model": "logistic_regression_custom",
+                    "feature_set": feature_set,
+                    "reg_type": reg_type,
+                    "lr": float(lr),
+                    "epochs": int(epochs),
+                    "reg_strength": float(reg_strength),
+                    "dev_accuracy": float(dev_metrics["accuracy"]),
+                    "dev_f1": float(dev_metrics["f1"]),
+                    "dev_macro_f1": float(dev_metrics["macro_f1"]),
+                    "test_accuracy": float(test_metrics["accuracy"]),
+                    "test_f1": float(test_metrics["f1"]),
+                    "test_macro_f1": float(test_metrics["macro_f1"]),
+                }
+            )
 
     best_mnb = best_by_metric(mnb_results, selection_metric)
     best_bnb = best_by_metric(bnb_results, selection_metric)
@@ -497,6 +558,8 @@ def run_custom_tuning(
             "min_vocab_freq": int(min_vocab_freq),
             "max_vocab": int(max_vocab),
             "vocab_size": int(len(vocab)),
+            "lexicon_feature_count": 6,
+            "feature_sets_compared": list(FEATURE_SETS),
         },
         "search": {
             "selection_metric": selection_metric,
