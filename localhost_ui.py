@@ -31,6 +31,7 @@ from core.ml import LogisticBinary, classification_metrics
 from core.paths import NEWS_CORPUS_PATH, ROOT
 from core.sentence_boundary_task_v2 import fit_task4_v2_assets
 from core.sentiment_task import (
+    SKLEARN_AVAILABLE,
     build_vocab_for_classification,
     load_sentiment_dataset,
     sentiment_dataset_path_from_root,
@@ -183,6 +184,37 @@ def _stratified_take_indices(y: np.ndarray, max_samples: int) -> np.ndarray:
     return out
 
 
+def _sentiment_demo_model_file(
+    root: Path,
+    dataset_resolved: Path,
+    dataset_size: int,
+    dataset_mtime_ns: int,
+    max_samples: int,
+    max_vocab: int,
+    min_freq: int,
+) -> Path:
+    key = (
+        "sentiment_demo_v2|"
+        f"{dataset_resolved}|{int(dataset_size)}|{int(dataset_mtime_ns)}|"
+        f"{int(max_samples)}|{int(max_vocab)}|{int(min_freq)}"
+    )
+    model_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
+    return root / "models" / "sentiment_demo" / f"sentiment_demo_{model_hash}.pkl"
+
+
+def _load_pickled_sentiment_assets(path: Path) -> Dict[str, Any] | None:
+    try:
+        with path.open("rb") as f:
+            payload = pickle.load(f)
+    except (OSError, pickle.PickleError, EOFError, AttributeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if "model" not in payload or "vocab" not in payload:
+        return None
+    return payload
+
+
 @st.cache_resource(show_spinner=False)
 def _train_sentiment_demo(
     root_path: str,
@@ -199,22 +231,39 @@ def _train_sentiment_demo(
     )
     dataset_resolved = dataset_path.resolve()
     dataset_stat = dataset_resolved.stat()
-    cache_key = (
+    model_file = _sentiment_demo_model_file(
+        root=root,
+        dataset_resolved=dataset_resolved,
+        dataset_size=int(dataset_stat.st_size),
+        dataset_mtime_ns=int(dataset_stat.st_mtime_ns),
+        max_samples=int(max_samples),
+        max_vocab=int(max_vocab),
+        min_freq=int(min_freq),
+    )
+    payload = _load_pickled_sentiment_assets(model_file)
+    if payload is not None:
+        payload["loaded_from_disk"] = 1.0
+        payload["model_path"] = str(model_file)
+        return payload
+
+    legacy_key = (
         "sentiment_demo_v1|"
         f"{dataset_resolved}|{int(dataset_stat.st_size)}|{int(dataset_stat.st_mtime_ns)}|"
         f"{int(max_samples)}|{int(max_vocab)}|{int(min_freq)}"
     )
-    cache_hash = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:24]
-    cache_file = root / ".cache" / "sentiment_demo" / f"{cache_hash}.pkl"
-
-    if cache_file.exists():
+    legacy_hash = hashlib.sha256(legacy_key.encode("utf-8")).hexdigest()[:24]
+    legacy_file = root / ".cache" / "sentiment_demo" / f"{legacy_hash}.pkl"
+    payload = _load_pickled_sentiment_assets(legacy_file)
+    if payload is not None:
+        payload["loaded_from_disk"] = 1.0
+        payload["model_path"] = str(model_file)
         try:
-            with cache_file.open("rb") as f:
-                payload = pickle.load(f)
-            if isinstance(payload, dict) and "model" in payload and "vocab" in payload:
-                return payload
-        except (OSError, pickle.PickleError, EOFError, AttributeError, ValueError):
+            model_file.parent.mkdir(parents=True, exist_ok=True)
+            with model_file.open("wb") as f:
+                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        except (OSError, pickle.PickleError):
             pass
+        return payload
 
     texts, labels, data_source = load_sentiment_dataset(dataset_path)
     if len(texts) < 200:
@@ -231,30 +280,71 @@ def _train_sentiment_demo(
     y_train = y_sub[:train_size]
     y_test = y_sub[train_size:]
 
+    model: Any
+    pred: np.ndarray
     vocab = build_vocab_for_classification(x_train_text, min_freq=min_freq, max_vocab=max_vocab)
-    xtr_counts = vectorize_bow_counts(x_train_text, vocab)
-    xte_counts = vectorize_bow_counts(x_test_text, vocab)
-    xtr_lex = sentiment_lexicon_features(x_train_text)
-    xte_lex = sentiment_lexicon_features(x_test_text)
-    xtr = np.hstack([xtr_counts, xtr_lex])
-    xte = np.hstack([xte_counts, xte_lex])
+    vectorizer: Any | None = None
+    uses_sklearn_sparse = 0.0
 
-    model = LogisticBinary(lr=0.2, epochs=35, reg_type="l2", reg_strength=1e-4).fit(xtr, y_train)
-    pred = model.predict(xte)
+    if SKLEARN_AVAILABLE:
+        try:
+            from scipy import sparse
+            from sklearn.feature_extraction.text import CountVectorizer
+            from sklearn.linear_model import LogisticRegression
+
+            vectorizer = CountVectorizer(
+                lowercase=True,
+                token_pattern=r"(?u)\b\w+\b",
+                min_df=max(int(min_freq), 1),
+                max_features=max(int(max_vocab), 1),
+            )
+            xtr_counts_sparse = vectorizer.fit_transform(x_train_text)
+            xte_counts_sparse = vectorizer.transform(x_test_text)
+            xtr_lex_sparse = sparse.csr_matrix(sentiment_lexicon_features(x_train_text))
+            xte_lex_sparse = sparse.csr_matrix(sentiment_lexicon_features(x_test_text))
+            xtr_sparse = sparse.hstack([xtr_counts_sparse, xtr_lex_sparse], format="csr")
+            xte_sparse = sparse.hstack([xte_counts_sparse, xte_lex_sparse], format="csr")
+
+            model = LogisticRegression(
+                C=1.0,
+                solver="liblinear",
+                max_iter=3000,
+                random_state=42,
+            ).fit(xtr_sparse, y_train)
+            pred = model.predict(xte_sparse).astype(np.int64)
+            uses_sklearn_sparse = 1.0
+            vocab = dict(vectorizer.vocabulary_)
+        except Exception:
+            vectorizer = None
+
+    if vectorizer is None:
+        xtr_counts = vectorize_bow_counts(x_train_text, vocab)
+        xte_counts = vectorize_bow_counts(x_test_text, vocab)
+        xtr_lex = sentiment_lexicon_features(x_train_text)
+        xte_lex = sentiment_lexicon_features(x_test_text)
+        xtr = np.hstack([xtr_counts, xtr_lex])
+        xte = np.hstack([xte_counts, xte_lex])
+        model = LogisticBinary(lr=0.2, epochs=35, reg_type="l2", reg_strength=1e-4).fit(xtr, y_train)
+        pred = model.predict(xte)
+
     test_metrics = classification_metrics(y_test, pred) if len(y_test) else {"accuracy": 0.0}
 
     assets = {
         "model": model,
         "vocab": vocab,
+        "vectorizer": vectorizer,
+        "uses_sklearn_sparse": uses_sklearn_sparse,
         "dataset_path": str(dataset_path),
         "num_samples": len(texts_sub),
         "train_samples": len(y_train),
         "test_samples": len(y_test),
         "test_accuracy": float(test_metrics.get("accuracy", 0.0)),
+        "loaded_from_disk": 0.0,
+        "model_path": str(model_file),
     }
     try:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        with cache_file.open("wb") as f:
+        model_file.parent.mkdir(parents=True, exist_ok=True)
+        with model_file.open("wb") as f:
             pickle.dump(assets, f, protocol=pickle.HIGHEST_PROTOCOL)
     except (OSError, pickle.PickleError):
         pass
@@ -262,12 +352,25 @@ def _train_sentiment_demo(
 
 
 def _predict_sentiment(text: str, sentiment_assets: Mapping[str, Any]) -> Dict[str, Any]:
-    vocab = sentiment_assets["vocab"]
     model = sentiment_assets["model"]
-    x_count = vectorize_bow_counts([text], vocab)
-    x_lex = sentiment_lexicon_features([text])
-    x = np.hstack([x_count, x_lex])
-    proba = float(model.predict_proba(x)[0])
+    if float(sentiment_assets.get("uses_sklearn_sparse", 0.0)) >= 0.5:
+        from scipy import sparse
+
+        vectorizer = sentiment_assets["vectorizer"]
+        x_count = vectorizer.transform([text])
+        x_lex = sparse.csr_matrix(sentiment_lexicon_features([text]))
+        x = sparse.hstack([x_count, x_lex], format="csr")
+    else:
+        vocab = sentiment_assets["vocab"]
+        x_count = vectorize_bow_counts([text], vocab)
+        x_lex = sentiment_lexicon_features([text])
+        x = np.hstack([x_count, x_lex])
+
+    raw_proba = model.predict_proba(x)
+    if isinstance(raw_proba, np.ndarray) and raw_proba.ndim == 2:
+        proba = float(raw_proba[0, 1])
+    else:
+        proba = float(raw_proba[0])
     label = "positive" if proba >= 0.5 else "negative"
     return {"label": label, "positive_probability": proba}
 
@@ -509,10 +612,10 @@ def _run_sentiment_demo_panel(root_path: Path) -> None:
 
     col1, col2, col3 = st.columns(3)
     max_samples = col1.number_input(
-        "Demo max samples", min_value=500, max_value=50000, value=6000, step=500
+        "Demo max samples", min_value=0, max_value=50000, value=0, step=500
     )
     max_vocab = col2.number_input(
-        "Demo max vocab", min_value=1000, max_value=50000, value=12000, step=500
+        "Demo max vocab", min_value=1000, max_value=50000, value=25000, step=500
     )
     min_freq = col3.number_input("Min token freq", min_value=1, max_value=10, value=2, step=1)
 
@@ -537,7 +640,7 @@ def _run_sentiment_demo_panel(root_path: Path) -> None:
         assets = _load_once_per_settings(
             state_slot="sentiment_assets",
             settings_key=settings_key,
-            spinner_text="Training sentiment demo model...",
+            spinner_text="Loading sentiment demo model (trains once if missing)...",
             loader=lambda: _train_sentiment_demo(
                 str(root_path),
                 dataset_input.strip(),
@@ -549,9 +652,10 @@ def _run_sentiment_demo_panel(root_path: Path) -> None:
         prediction = _predict_sentiment(sentiment_text, assets)
         st.metric("Prediction", prediction["label"])
         st.metric("Positive Probability", _format_value(prediction["positive_probability"]))
+        source_label = "loaded" if float(assets.get("loaded_from_disk", 0.0)) >= 0.5 else "trained"
         st.caption(
-            f"Demo model uses {assets['num_samples']} samples from {assets['dataset_path']} "
-            f"(test accuracy ~ {assets['test_accuracy']:.4f})."
+            f"Demo model ({source_label}) uses {assets['num_samples']} samples from {assets['dataset_path']} "
+            f"(test accuracy ~ {assets['test_accuracy']:.4f}). Saved at: {assets.get('model_path', 'n/a')}"
         )
 
 
