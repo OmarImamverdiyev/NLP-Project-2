@@ -34,7 +34,7 @@ Then open `http://localhost:8501`.
 
 This web UI includes:
 - Results tab for Task 1-4 metrics (individual run buttons + run-all);
-- Unigram/Bigram tab to test a custom sentence and view perplexity/probabilities;
+- Unigram/Bigram tab to test a custom sentence, reuse a precomputed example output, and compare trigram smoothing (Laplace, interpolation, backoff, Kneser-Ney);
 - Sentiment tab to classify your own text with a lightweight demo model;
 - Sentence Boundary tab to test dot (`.`) boundary predictions on custom text.
 
@@ -45,6 +45,17 @@ Task 1 and Task 2:
 ```powershell
 python Task1/run_task1.py --max-sentences 50000 --min-freq 2
 python Task2/run_task2.py --max-sentences 50000 --min-freq 2
+```
+
+By default, these commands also save metrics to:
+- `Task1/task1_results.txt`
+- `Task2/task2_results.txt`
+
+You can override output path:
+
+```powershell
+python Task1/run_task1.py --output Task1/custom_task1_metrics.txt
+python Task2/run_task2.py --output Task2/custom_task2_metrics.txt
 ```
 
 Task 3:

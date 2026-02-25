@@ -29,6 +29,7 @@ from core.language_modeling import (
 )
 from core.ml import LogisticBinary
 from core.paths import NEWS_CORPUS_PATH, ROOT
+from core.reporting import save_metrics_text
 from core.sentence_boundary_task_v2 import fit_task4_v2_assets
 from core.sentiment_task import (
     SKLEARN_AVAILABLE,
@@ -48,6 +49,14 @@ TASK2_SMOOTH_KEYS = [
     "ppl_trigram_kneser_ney",
 ]
 
+LM_DEFAULT_EXAMPLE_SENTENCE = "Bugun hava yaxsidir ve men NLP oyrenirem."
+LM_SMOOTHING_TO_KEY = {
+    "Laplace": "ppl_trigram_laplace",
+    "Interpolation": "ppl_trigram_interpolation",
+    "Backoff": "ppl_trigram_backoff",
+    "Kneser-Ney": "ppl_trigram_kneser_ney",
+}
+
 
 def _format_value(value: Any) -> Any:
     if isinstance(value, float):
@@ -66,56 +75,78 @@ def _map_to_vocab(tokens: Sequence[str], vocab: set[str]) -> List[str]:
     return [tok if tok in vocab else "<UNK>" for tok in tokens]
 
 
-@st.cache_resource(show_spinner=False)
-def _load_lm_assets(
-    news_path: str,
+def _path_signature(path: Path) -> Tuple[str, int, int]:
+    resolved = path.resolve()
+    stat = resolved.stat()
+    return str(resolved), int(stat.st_size), int(stat.st_mtime_ns)
+
+
+def _lm_demo_assets_file(
+    news_resolved: Path,
+    news_size: int,
+    news_mtime_ns: int,
     max_sentences: int,
     min_freq: int,
-) -> Dict[str, Any]:
-    path = Path(news_path)
-    sentences = load_news_sentences(path, max_sentences=max_sentences)
-    if len(sentences) < 10:
-        raise ValueError("Not enough sentences in corpus to build language model demo.")
+) -> Path:
+    key = (
+        "lm_demo_v1|"
+        f"{news_resolved}|{int(news_size)}|{int(news_mtime_ns)}|"
+        f"{int(max_sentences)}|{int(min_freq)}"
+    )
+    model_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
+    return ROOT / "models" / "lm_demo" / f"lm_demo_{model_hash}.pkl"
 
-    train, dev, _test = train_dev_test_split(sentences, train_ratio=0.8, dev_ratio=0.1)
-    train_mapped, dev_mapped, vocab = replace_rare_with_unk(train, dev, min_freq=min_freq)
-    counts = build_ngram_counts(train_mapped, vocab)
-    lambdas = tune_linear_interpolation(dev_mapped, counts, step=0.1)
-    return {
-        "counts": counts,
-        "vocab": vocab,
-        "lambdas": lambdas,
-        "num_sentences": len(sentences),
-        "num_train_sentences": len(train_mapped),
+
+def _load_pickled_lm_assets(path: Path) -> Dict[str, Any] | None:
+    try:
+        with path.open("rb") as f:
+            payload = pickle.load(f)
+    except (OSError, pickle.PickleError, EOFError, AttributeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    required = {
+        "counts",
+        "vocab",
+        "lambdas",
+        "num_sentences",
+        "num_train_sentences",
+        "example_sentence",
+        "example_perplexities",
+        "example_token_rows",
     }
+    if not required.issubset(payload):
+        return None
+    return payload
 
 
-def _safe_perplexity_text(sentence: str, lm_assets: Mapping[str, Any]) -> Dict[str, float]:
-    counts = lm_assets["counts"]
-    vocab = lm_assets["vocab"]
-    lambdas = lm_assets["lambdas"]
-    tokens = tokenize_words(sentence)
-    if not tokens:
-        raise ValueError("Please enter a sentence with at least one token.")
-    mapped = _map_to_vocab(tokens, vocab)
-    seq = [mapped]
+def _lm_sentence_perplexities(
+    mapped_tokens: Sequence[str],
+    counts: Any,
+    lambdas: Tuple[float, float, float],
+) -> Dict[str, float]:
+    seq = [list(mapped_tokens)]
     return {
         "ppl_unigram_mle": perplexity_unigram(seq, counts, mode="mle"),
+        "ppl_unigram_laplace": perplexity_unigram(seq, counts, mode="laplace"),
         "ppl_bigram_mle": perplexity_bigram(seq, counts, mode="mle"),
+        "ppl_bigram_laplace": perplexity_bigram(seq, counts, mode="laplace"),
         "ppl_trigram_mle": perplexity_trigram(seq, counts, mode="mle"),
+        "ppl_trigram_laplace": perplexity_trigram(seq, counts, mode="laplace"),
         "ppl_trigram_interpolation": perplexity_trigram(
             seq, counts, mode="interpolation", lambdas=lambdas
         ),
+        "ppl_trigram_backoff": perplexity_trigram(seq, counts, mode="backoff", d=0.75),
+        "ppl_trigram_kneser_ney": perplexity_trigram(seq, counts, mode="kneser_ney", d=0.75),
     }
 
 
-def _token_probability_rows(sentence: str, lm_assets: Mapping[str, Any]) -> pd.DataFrame:
-    counts = lm_assets["counts"]
-    vocab = lm_assets["vocab"]
-    tokens = tokenize_words(sentence)
-    mapped = _map_to_vocab(tokens, vocab)
+def _token_probability_rows_mapped(
+    mapped_tokens: Sequence[str],
+    counts: Any,
+) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    s3 = add_markers(mapped, 3)
+    s3 = add_markers(list(mapped_tokens), 3)
     for i in range(2, len(s3)):
         u, v, w = s3[i - 2], s3[i - 1], s3[i]
         rows.append(
@@ -127,6 +158,81 @@ def _token_probability_rows(sentence: str, lm_assets: Mapping[str, Any]) -> pd.D
                 "p_trigram": p_trigram_mle(u, v, w, counts),
             }
         )
+    return rows
+
+
+@st.cache_resource(show_spinner=False)
+def _load_lm_assets(
+    news_path: str,
+    max_sentences: int,
+    min_freq: int,
+) -> Dict[str, Any]:
+    path = Path(news_path)
+    news_resolved_str, news_size, news_mtime_ns = _path_signature(path)
+    cache_file = _lm_demo_assets_file(
+        news_resolved=Path(news_resolved_str),
+        news_size=news_size,
+        news_mtime_ns=news_mtime_ns,
+        max_sentences=max_sentences,
+        min_freq=min_freq,
+    )
+    payload = _load_pickled_lm_assets(cache_file)
+    if payload is not None:
+        payload["loaded_from_disk"] = 1.0
+        payload["cache_path"] = str(cache_file)
+        return payload
+
+    sentences = load_news_sentences(path, max_sentences=max_sentences)
+    if len(sentences) < 10:
+        raise ValueError("Not enough sentences in corpus to build language model demo.")
+
+    train, dev, _test = train_dev_test_split(sentences, train_ratio=0.8, dev_ratio=0.1)
+    train_mapped, dev_mapped, vocab = replace_rare_with_unk(train, dev, min_freq=min_freq)
+    counts = build_ngram_counts(train_mapped, vocab)
+    lambdas = tune_linear_interpolation(dev_mapped, counts, step=0.1)
+    example_tokens = tokenize_words(LM_DEFAULT_EXAMPLE_SENTENCE)
+    example_mapped = _map_to_vocab(example_tokens, vocab)
+    assets = {
+        "counts": counts,
+        "vocab": vocab,
+        "lambdas": lambdas,
+        "num_sentences": len(sentences),
+        "num_train_sentences": len(train_mapped),
+        "example_sentence": LM_DEFAULT_EXAMPLE_SENTENCE,
+        "example_perplexities": _lm_sentence_perplexities(example_mapped, counts, lambdas),
+        "example_token_rows": _token_probability_rows_mapped(example_mapped, counts),
+        "loaded_from_disk": 0.0,
+        "cache_path": str(cache_file),
+    }
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        with cache_file.open("wb") as f:
+            pickle.dump(assets, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except (OSError, pickle.PickleError):
+        pass
+    return assets
+
+
+def _mapped_sentence_or_raise(sentence: str, vocab: set[str]) -> List[str]:
+    tokens = tokenize_words(sentence)
+    if not tokens:
+        raise ValueError("Please enter a sentence with at least one token.")
+    return _map_to_vocab(tokens, vocab)
+
+
+def _safe_perplexity_text(sentence: str, lm_assets: Mapping[str, Any]) -> Dict[str, float]:
+    counts = lm_assets["counts"]
+    vocab = lm_assets["vocab"]
+    lambdas = lm_assets["lambdas"]
+    mapped = _mapped_sentence_or_raise(sentence, vocab)
+    return _lm_sentence_perplexities(mapped, counts, lambdas)
+
+
+def _token_probability_rows(sentence: str, lm_assets: Mapping[str, Any]) -> pd.DataFrame:
+    counts = lm_assets["counts"]
+    vocab = lm_assets["vocab"]
+    mapped = _mapped_sentence_or_raise(sentence, vocab)
+    rows = _token_probability_rows_mapped(mapped, counts)
     return pd.DataFrame(rows)
 
 
@@ -455,9 +561,7 @@ def _train_task4_demo(
 
 
 def _dataset_signature(path: Path) -> Tuple[str, int, int]:
-    resolved = path.resolve()
-    stat = resolved.stat()
-    return str(resolved), int(stat.st_size), int(stat.st_mtime_ns)
+    return _path_signature(path)
 
 
 def _extract_dot_features_for_text(text: str) -> List[Dict[str, Any]]:
@@ -556,6 +660,17 @@ def _predict_dot_boundaries(
     return pd.DataFrame(pred_rows), sentences
 
 
+def _task_result_txt_path(root_path: Path, task_number: int) -> Path:
+    task_id = int(task_number)
+    return root_path / f"Task{task_id}" / f"task{task_id}_results.txt"
+
+
+def _persist_task_result_txt(root_path: Path, task_number: int, metrics: Mapping[str, Any]) -> Path:
+    title = f"Task {int(task_number)}"
+    out_path = _task_result_txt_path(root_path, int(task_number))
+    return save_metrics_text(out_path, title, metrics)
+
+
 def _run_results_panel(
     news_path: Path,
     root_path: Path,
@@ -567,15 +682,20 @@ def _run_results_panel(
     st.subheader("Task Results")
     if "task_results" not in st.session_state:
         st.session_state["task_results"] = {}
+    if "task_result_files" not in st.session_state:
+        st.session_state["task_result_files"] = {}
 
     col1, col2, col3, col4, col5 = st.columns(5)
     if col1.button("Run Task 1", use_container_width=True):
         with st.spinner("Running Task 1..."):
-            st.session_state["task_results"]["Task 1"] = run_task1(
+            metrics = run_task1(
                 news_path=news_path,
                 max_sentences=max_sentences,
                 min_freq=min_freq,
             )
+            st.session_state["task_results"]["Task 1"] = metrics
+            saved_path = _persist_task_result_txt(root_path, 1, metrics)
+            st.session_state["task_result_files"]["Task 1"] = str(saved_path)
     if col2.button("Run Task 2", use_container_width=True):
         with st.spinner("Running Task 2..."):
             metrics = run_task2(
@@ -587,6 +707,8 @@ def _run_results_panel(
             best_key = min(TASK2_SMOOTH_KEYS, key=lambda k: metrics[k])
             metrics["best_smoothing_by_ppl"] = best_key
             st.session_state["task_results"]["Task 2"] = metrics
+            saved_path = _persist_task_result_txt(root_path, 2, metrics)
+            st.session_state["task_result_files"]["Task 2"] = str(saved_path)
     if col3.button("Run Task 3", use_container_width=True):
         with st.spinner("Running Task 3..."):
             st.session_state["task_results"]["Task 3"] = run_task3(root_path)
@@ -633,9 +755,14 @@ def _run_results_panel(
                 "Task 3": task3,
                 "Task 4": task4,
             }
+            saved_task1 = _persist_task_result_txt(root_path, 1, task1)
+            saved_task2 = _persist_task_result_txt(root_path, 2, task2)
+            st.session_state["task_result_files"]["Task 1"] = str(saved_task1)
+            st.session_state["task_result_files"]["Task 2"] = str(saved_task2)
 
     if st.button("Clear Results"):
         st.session_state["task_results"] = {}
+        st.session_state["task_result_files"] = {}
 
     if not st.session_state["task_results"]:
         st.info("Run any task to see metrics.")
@@ -644,14 +771,26 @@ def _run_results_panel(
     for task_name, metrics in st.session_state["task_results"].items():
         st.markdown(f"**{task_name}**")
         st.dataframe(_metrics_frame(metrics), use_container_width=True, hide_index=True)
+        saved_file = st.session_state.get("task_result_files", {}).get(task_name)
+        if saved_file:
+            st.caption(f"Saved metrics: `{saved_file}`")
 
 
 def _run_lm_demo_panel(news_path: Path, max_sentences: int, min_freq: int) -> None:
     st.subheader("Unigram / Bigram / Trigram Demo")
-    st.caption("Type a sentence and inspect perplexity and token-level probabilities.")
+    st.caption(
+        "Type a sentence and inspect perplexity and token-level probabilities. "
+        "The default example is precomputed and reused."
+    )
+    smoothing_choice = st.selectbox(
+        "Advanced trigram smoothing",
+        options=list(LM_SMOOTHING_TO_KEY.keys()),
+        index=1,
+        key="lm_demo_smoothing_choice",
+    )
     sentence = st.text_area(
         "Input sentence",
-        value="Bugun hava yaxsidir ve men NLP oyrenirem.",
+        value=LM_DEFAULT_EXAMPLE_SENTENCE,
         height=90,
         key="lm_demo_text",
     )
@@ -662,15 +801,37 @@ def _run_lm_demo_panel(news_path: Path, max_sentences: int, min_freq: int) -> No
             spinner_text="Loading language model assets...",
             loader=lambda: _load_lm_assets(str(news_path), int(max_sentences), int(min_freq)),
         )
-        with st.spinner("Scoring sentence..."):
-            ppl = _safe_perplexity_text(sentence, lm_assets)
-            probs = _token_probability_rows(sentence, lm_assets)
+        normalized_sentence = sentence.strip()
+        example_sentence = str(lm_assets.get("example_sentence", LM_DEFAULT_EXAMPLE_SENTENCE))
+        if normalized_sentence == example_sentence:
+            ppl = dict(lm_assets["example_perplexities"])
+            probs = pd.DataFrame(lm_assets["example_token_rows"])
+            source = "disk cache" if float(lm_assets.get("loaded_from_disk", 0.0)) >= 0.5 else "memory cache"
+            st.caption(f"Used precomputed example output ({source}).")
+        else:
+            with st.spinner("Scoring sentence..."):
+                ppl = _safe_perplexity_text(normalized_sentence, lm_assets)
+                probs = _token_probability_rows(normalized_sentence, lm_assets)
 
+        selected_trigram_key = LM_SMOOTHING_TO_KEY[smoothing_choice]
+        use_laplace_for_lower_orders = smoothing_choice == "Laplace"
+        unigram_key = "ppl_unigram_laplace" if use_laplace_for_lower_orders else "ppl_unigram_mle"
+        bigram_key = "ppl_bigram_laplace" if use_laplace_for_lower_orders else "ppl_bigram_mle"
+        unigram_label = "Laplace" if use_laplace_for_lower_orders else "MLE"
+        bigram_label = "Laplace" if use_laplace_for_lower_orders else "MLE"
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Unigram PPL", _format_value(ppl["ppl_unigram_mle"]))
-        col2.metric("Bigram PPL", _format_value(ppl["ppl_bigram_mle"]))
-        col3.metric("Trigram PPL", _format_value(ppl["ppl_trigram_mle"]))
-        col4.metric("Trigram Interp PPL", _format_value(ppl["ppl_trigram_interpolation"]))
+        col1.metric(f"Unigram PPL ({unigram_label})", _format_value(ppl[unigram_key]))
+        col2.metric(f"Bigram PPL ({bigram_label})", _format_value(ppl[bigram_key]))
+        col3.metric(f"Trigram PPL ({smoothing_choice})", _format_value(ppl[selected_trigram_key]))
+        col4.metric("Trigram PPL (MLE)", _format_value(ppl["ppl_trigram_mle"]))
+
+        smooth_rows = [
+            {"smoothing": name, "trigram_ppl": _format_value(ppl[key])}
+            for name, key in LM_SMOOTHING_TO_KEY.items()
+        ]
+        st.markdown("**Trigram Smoothing Comparison**")
+        st.dataframe(pd.DataFrame(smooth_rows), use_container_width=True, hide_index=True)
+        st.markdown("**Token-level Probabilities (MLE)**")
         st.dataframe(probs, use_container_width=True, hide_index=True)
 
 

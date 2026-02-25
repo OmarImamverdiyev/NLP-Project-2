@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 
 from core.language_modeling import run_task2
 from core.paths import NEWS_CORPUS_PATH
-from core.reporting import print_section
+from core.reporting import print_section, save_metrics_text
 
 
 SMOOTH_KEYS = [
@@ -27,6 +27,7 @@ def main() -> None:
     parser.add_argument("--news-path", type=Path, default=NEWS_CORPUS_PATH)
     parser.add_argument("--max-sentences", type=int, default=120000)
     parser.add_argument("--min-freq", type=int, default=2)
+    parser.add_argument("--output", type=Path, default=ROOT / "Task2" / "task2_results.txt")
     args = parser.parse_args()
 
     if not args.news_path.exists():
@@ -41,6 +42,10 @@ def main() -> None:
 
     best_key = min(SMOOTH_KEYS, key=lambda k: metrics[k])
     print(f"\nBest smoothing by perplexity: {best_key}")
+    metrics_out = dict(metrics)
+    metrics_out["best_smoothing_by_ppl"] = best_key
+    out_path = save_metrics_text(args.output, "Task 2", metrics_out)
+    print(f"Saved Task 2 metrics to: {out_path}")
 
 
 if __name__ == "__main__":
