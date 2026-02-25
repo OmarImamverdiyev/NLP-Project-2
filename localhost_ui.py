@@ -194,7 +194,7 @@ def _sentiment_demo_model_file(
     min_freq: int,
 ) -> Path:
     key = (
-        "sentiment_demo_v2|"
+        "sentiment_demo_v3|"
         f"{dataset_resolved}|{int(dataset_size)}|{int(dataset_mtime_ns)}|"
         f"{int(max_samples)}|{int(max_vocab)}|{int(min_freq)}"
     )
@@ -224,11 +224,11 @@ def _train_sentiment_demo(
     min_freq: int,
 ) -> Dict[str, Any]:
     root = Path(root_path)
-    dataset_path = (
-        Path(dataset_path_input)
-        if dataset_path_input.strip()
-        else sentiment_dataset_path_from_root(root)
-    )
+    if dataset_path_input.strip():
+        raw_dataset_path = Path(dataset_path_input.strip())
+        dataset_path = raw_dataset_path if raw_dataset_path.is_absolute() else (root / raw_dataset_path)
+    else:
+        dataset_path = sentiment_dataset_path_from_root(root)
     dataset_resolved = dataset_path.resolve()
     dataset_stat = dataset_resolved.stat()
     model_file = _sentiment_demo_model_file(
@@ -612,15 +612,30 @@ def _run_sentiment_demo_panel(root_path: Path) -> None:
 
     col1, col2, col3 = st.columns(3)
     max_samples = col1.number_input(
-        "Demo max samples", min_value=0, max_value=50000, value=0, step=500
+        "Demo max samples", min_value=0, value=0, step=500
     )
     max_vocab = col2.number_input(
         "Demo max vocab", min_value=1000, max_value=50000, value=25000, step=500
     )
     min_freq = col3.number_input("Min token freq", min_value=1, max_value=10, value=2, step=1)
 
-    dataset_default = str(sentiment_dataset_path_from_root(root_path))
-    dataset_input = st.text_input("Dataset path (optional override)", value=dataset_default)
+    dataset_auto = sentiment_dataset_path_from_root(root_path)
+    dataset_v1 = root_path / "sentiment_dataset" / "dataset_v1.csv"
+    dataset_csv = root_path / "sentiment_dataset" / "dataset.csv"
+    dataset_choice = st.selectbox(
+        "Dataset source",
+        options=["Auto (prefer dataset_v1.csv)", "dataset_v1.csv", "dataset.csv", "Custom path"],
+        index=0,
+        key="sentiment_dataset_choice",
+    )
+    if dataset_choice == "dataset_v1.csv":
+        dataset_input = str(dataset_v1)
+    elif dataset_choice == "dataset.csv":
+        dataset_input = str(dataset_csv)
+    elif dataset_choice == "Custom path":
+        dataset_input = st.text_input("Custom dataset path", value=str(dataset_auto))
+    else:
+        dataset_input = ""
 
     sentiment_text = st.text_area(
         "Text to classify",

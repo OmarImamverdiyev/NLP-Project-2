@@ -39,50 +39,133 @@ TASK3_FEATURE_SETS = ("bow", "lexicon", "bow_lexicon")
 
 
 AZ_POSITIVE = {
+    "yaxşı",
     "yaxsi",
+    "gözəl",
     "gozel",
+    "əla",
     "ela",
     "super",
+    "superdir",
+    "təşəkkür",
     "tesekkur",
+    "sağol",
+    "sagol",
     "saqol",
+    "afərin",
     "afarin",
+    "mükəmməl",
     "mukemmel",
+    "qəşəng",
     "qeseng",
     "best",
+    "sevirəm",
     "sevirem",
+    "uğurlar",
     "ugurlar",
     "halal",
     "bravo",
+    "çox",
     "cok",
     "cox",
+    "möhtəşəm",
     "mohtesem",
+    "bəyəndim",
+    "beyendim",
+    "razıyam",
+    "raziyam",
+    "müsbət",
+    "musbet",
+    "maraqlı",
+    "maraqli",
 }
 AZ_NEGATIVE = {
     "pis",
+    "bərbad",
     "berbad",
+    "biabır",
     "biyabir",
+    "rəzil",
     "rezil",
+    "nifrət",
     "nefret",
+    "zəif",
     "zeif",
+    "səhv",
     "sehv",
     "yalan",
+    "kötü",
     "kotu",
     "problem",
+    "qəzəb",
     "qezeb",
     "utanc",
+    "biabırçılıq",
     "biyabirciliq",
     "bezdim",
-    "hec",
+    "faciə",
     "facie",
+    "iyrənc",
+    "iyrenc",
+    "bəyənmədim",
+    "beyenmedim",
+    "narazı",
+    "narazi",
+    "uğursuz",
+    "ugursuz",
+    "dəhşət",
+    "dehset",
 }
 NEGATION_TOKENS = {
     "deyil",
+    "deyilem",
+    "deyilsen",
     "yox",
+    "yoxdur",
+    "olmur",
+    "heç",
     "hec",
+    "nə",
+    "ne",
+    "never",
     "none",
     "not",
     "no",
 }
+
+
+NEGATION_SCOPE_TOKENS = {
+    "deyil",
+    "deyilem",
+    "deyilsen",
+    "yox",
+    "yoxdur",
+    "not",
+    "no",
+    "none",
+    "never",
+    "olmur",
+}
+POST_NEGATION_TOKENS = {
+    "deyil",
+    "deyilem",
+    "deyilsen",
+    "yox",
+    "yoxdur",
+}
+NEGATION_SCOPE_BREAKERS = {
+    "amma",
+    "ancaq",
+    "lakin",
+    "fakat",
+    "fəqət",
+    "but",
+    "ve",
+    "və",
+}
+NEGATION_PRE_WINDOW = 3
+NEGATION_POST_WINDOW = 2
+
 
 def sentiment_dataset_path_from_root(root: Path) -> Path:
     dataset_v1 = root / "sentiment_dataset" / "dataset_v1.csv"
@@ -178,20 +261,68 @@ def vectorize_bow_binary(texts: Sequence[str], vocab: Dict[str, int]) -> np.ndar
     return x
 
 
+def _negation_count_around(tokens: Sequence[str], idx: int) -> int:
+    count = 0
+
+    left = max(0, idx - NEGATION_PRE_WINDOW)
+    for j in range(idx - 1, left - 1, -1):
+        tok = tokens[j]
+        if tok in NEGATION_SCOPE_BREAKERS:
+            break
+        if tok in NEGATION_SCOPE_TOKENS:
+            count += 1
+
+    right = min(len(tokens), idx + 1 + NEGATION_POST_WINDOW)
+    for j in range(idx + 1, right):
+        tok = tokens[j]
+        if tok in NEGATION_SCOPE_BREAKERS:
+            break
+        if tok in POST_NEGATION_TOKENS:
+            count += 1
+
+    return count
+
+
+def _negation_aware_polarity_counts(tokens: Sequence[str]) -> Tuple[int, int, int]:
+    pos = 0
+    neg = 0
+    negated_hits = 0
+
+    for idx, tok in enumerate(tokens):
+        if tok in AZ_POSITIVE:
+            polarity = 1
+        elif tok in AZ_NEGATIVE:
+            polarity = -1
+        else:
+            continue
+
+        negation_count = _negation_count_around(tokens, idx)
+        if negation_count % 2 == 1:
+            polarity *= -1
+            negated_hits += 1
+
+        if polarity > 0:
+            pos += 1
+        else:
+            neg += 1
+
+    return pos, neg, negated_hits
+
+
 def sentiment_lexicon_features(texts: Sequence[str]) -> np.ndarray:
     feats = np.zeros((len(texts), 6), dtype=np.float32)
     for i, t in enumerate(texts):
         toks = tokenize_words(t)
         n = max(len(toks), 1)
-        pos = sum(1 for w in toks if w in AZ_POSITIVE)
-        neg = sum(1 for w in toks if w in AZ_NEGATIVE)
+        pos, neg, negated_hits = _negation_aware_polarity_counts(toks)
+        sentiment_hits = max(pos + neg, 1)
         has_negation = any(w in NEGATION_TOKENS for w in toks)
         feats[i, 0] = pos
         feats[i, 1] = neg
         feats[i, 2] = pos - neg
         feats[i, 3] = (pos - neg) / n
         feats[i, 4] = 1.0 if "!" in t else 0.0
-        feats[i, 5] = 1.0 if has_negation else 0.0
+        feats[i, 5] = max(1.0 if has_negation else 0.0, float(negated_hits) / sentiment_hits)
     return feats
 
 
