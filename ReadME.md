@@ -53,8 +53,10 @@ python assignment_tasks.py --max-sentences 120000 --min-freq 2
 python Task1/run_task1.py
 python Task2/run_task2.py
 python Task3/run_task3.py
-python Task4/run_task4.py
+python Task4/run_task4_v2.py
 ```
+
+> Note run task_v2 not first version for better results.
 
 ### Task 1: N-gram LM Perplexity
 
@@ -96,15 +98,8 @@ Defaults:
 - Auto dataset selection prefers `dataset_v1.csv`, then falls back to `dataset.csv`.
 - If `scikit-learn` is unavailable, default memory cap is `--max-samples 5000`.
 
-### Task 4: Dot Sentence-Boundary Detection (v1)
 
-```powershell
-python Task4/run_task4.py --news-path Corpora/News/corpus.txt
-python Task4/run_task4.py --labeled-csv dot_labeled_data.csv
-python Task4/run_task4.py --max-docs 20000 --max-examples 30000 --max-vocab-tokens 4000
-```
-
-### Task 4 v2 (Used by `assignment_tasks.py` and `localhost_ui.py`)
+### Task 4: Sentence Boundary
 
 ```powershell
 python Task4/run_task4_v2.py --dataset dot_labeled_data.csv
@@ -120,11 +115,11 @@ python Task3/tune_task3.py --search-mode extended --selection-metric dev_macro_f
 python Task3/tune_task3.py --dataset-path sentiment_dataset/dataset_v1.csv --max-samples 0 --save-json Task3/tuning_task3_v1.json
 ```
 
-### Tune Task 4 (v1)
+### Tune Task 4 
 
 ```powershell
-python Task4/tune_task4.py --search-mode extended --selection-metric dev_accuracy
-python Task4/tune_task4.py --save-json Task4/tuning_results.json
+python Task4/tune_task4_v2.py --search-mode extended --selection-metric dev_accuracy
+python Task4/tune_task4_v2.py --save-json Task4/tuning_results.json
 ```
 
 ## Local UIs
@@ -148,7 +143,6 @@ Then open: `http://localhost:8501`
 - `Task1/run_task1.py`: Task 1 CLI
 - `Task2/run_task2.py`: Task 2 CLI
 - `Task3/run_task3.py`: Task 3 CLI
-- `Task4/run_task4.py`: Task 4 v1 CLI
 - `Task4/run_task4_v2.py`: Task 4 v2 CLI
 - `assignment_tasks.py`: combined runner
 - `results_ui.py`: desktop dashboard
