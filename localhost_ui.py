@@ -571,6 +571,110 @@ def _dataset_signature(path: Path) -> Tuple[str, int, int]:
     return _path_signature(path)
 
 
+DOT_NUMERIC_FOLLOW_ABBREV = {
+    "dr",
+    "prof",
+    "mr",
+    "mrs",
+    "ms",
+    "sr",
+    "jr",
+    "st",
+    "no",
+    "vs",
+    "etc",
+}
+
+DOT_NON_TERMINAL_ABBREV = {
+    "dr",
+    "prof",
+    "mr",
+    "mrs",
+    "ms",
+    "sr",
+    "jr",
+    "st",
+    "no",
+    "vs",
+    "etc",
+    "mes",
+    "məs",
+    "yan",
+    "fev",
+    "mar",
+    "apr",
+    "may",
+    "iyn",
+    "iyl",
+    "avq",
+    "sen",
+    "okt",
+    "noy",
+    "dek",
+}
+
+
+def _first_token_after_dot(text: str, dot_index: int) -> Tuple[str, bool]:
+    pos = dot_index + 1
+    saw_space = False
+    while pos < len(text) and text[pos].isspace():
+        saw_space = True
+        pos += 1
+    if pos >= len(text):
+        return "", saw_space
+
+    start = pos
+    while pos < len(text) and not text[pos].isspace():
+        pos += 1
+    return text[start:pos], saw_space
+
+
+def _should_force_non_boundary_for_abbrev(
+    text: str,
+    dot_index: int,
+    prev_token: str,
+    next_token: str,
+) -> bool:
+    prev = (prev_token or "").strip().lower()
+    if prev not in DOT_NON_TERMINAL_ABBREV:
+        return False
+    if (next_token or "").strip():
+        return True
+
+    first_token, saw_space = _first_token_after_dot(text, dot_index)
+    if not saw_space or not first_token:
+        return False
+    return any(ch.isalpha() or ch.isdigit() for ch in first_token)
+
+
+def _question_exclamation_boundary_indices(text: str) -> List[int]:
+    # Treat runs like "?!", "!!!", and "??" as a single sentence boundary.
+    return [m.end() - 1 for m in re.finditer(r"[?!]+", text)]
+
+
+def _should_force_boundary_on_numeric_start(
+    text: str,
+    dot_index: int,
+    prev_token: str,
+) -> bool:
+    prev = (prev_token or "").strip().lower()
+    if not prev:
+        return False
+    if prev in DOT_NUMERIC_FOLLOW_ABBREV:
+        return False
+    if len(prev) == 1:
+        return False
+
+    first_token, saw_space = _first_token_after_dot(text, dot_index)
+    if not saw_space or not first_token:
+        return False
+
+    if not any(ch.isdigit() for ch in first_token):
+        return False
+
+    return True
+
+
 def _extract_dot_features_for_text(text: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for match in re.finditer(r"\.", text):
@@ -631,7 +735,9 @@ def _predict_dot_boundaries(
         empty = pd.DataFrame(
             columns=["dot_index", "prev_token", "next_token", "p_end", "prediction"]
         )
-        return empty, []
+        qx_boundaries = _question_exclamation_boundary_indices(text)
+        sentences = _split_by_boundary_indices(text, qx_boundaries)
+        return empty, sentences
 
     feature_rows = [
         {
@@ -651,6 +757,20 @@ def _predict_dot_boundaries(
     pred_rows: List[Dict[str, Any]] = []
     for row, prob in zip(rows, probs.tolist()):
         is_end = float(prob) >= threshold
+        forced_non_boundary = _should_force_non_boundary_for_abbrev(
+            text=text,
+            dot_index=int(row["dot_index"]),
+            prev_token=str(row["prev_token"]),
+            next_token=str(row["next_token"]),
+        )
+        if forced_non_boundary:
+            is_end = False
+        elif (not is_end) and _should_force_boundary_on_numeric_start(
+            text=text,
+            dot_index=int(row["dot_index"]),
+            prev_token=str(row["prev_token"]),
+        ):
+            is_end = True
         if is_end:
             boundary_indices.append(int(row["dot_index"]))
         pred_rows.append(
@@ -663,6 +783,7 @@ def _predict_dot_boundaries(
             }
         )
 
+    boundary_indices.extend(_question_exclamation_boundary_indices(text))
     sentences = _split_by_boundary_indices(text, boundary_indices)
     return pd.DataFrame(pred_rows), sentences
 
@@ -991,10 +1112,6 @@ def _run_task4_demo_panel(task4_dataset_path: Path, default_max_examples: int) -
             ),
         )
         pred_df, sentences = _predict_dot_boundaries(text, assets)
-        if pred_df.empty:
-            st.warning("No '.' found in text.")
-            return
-
         if sentences:
             sentence_df = pd.DataFrame(
                 {
@@ -1005,13 +1122,16 @@ def _run_task4_demo_panel(task4_dataset_path: Path, default_max_examples: int) -
             st.markdown("**Separated Sentences**")
             st.dataframe(sentence_df, use_container_width=True, hide_index=True)
 
-        st.markdown("**Dot-level Decisions**")
-        st.dataframe(pred_df, use_container_width=True, hide_index=True)
-        st.caption(
-            f"Model uses {int(assets['metrics']['num_examples'])} examples "
-            f"(best penalty: {assets['best_penalty'].upper()}, "
-            f"test F1: {assets['metrics']['best_test_f1']:.4f})."
-        )
+        if pred_df.empty:
+            st.info("No '.' found. Sentence splitting used only '?' and '!' boundaries.")
+        else:
+            st.markdown("**Dot-level Decisions**")
+            st.dataframe(pred_df, use_container_width=True, hide_index=True)
+            st.caption(
+                f"Model uses {int(assets['metrics']['num_examples'])} examples "
+                f"(best penalty: {assets['best_penalty'].upper()}, "
+                f"test F1: {assets['metrics']['best_test_f1']:.4f})."
+            )
 
 
 def main() -> None:

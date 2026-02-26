@@ -1,0 +1,234 @@
+\documentclass[aspectratio=169]{beamer}
+\usetheme{Madrid}
+\usecolortheme{default}
+
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{array}
+
+\title[NLP Project 2]{NLP Project 2\\Tasks 1--4}
+\author{}
+\institute{}
+\date{\today}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{What We Built}
+\begin{itemize}
+  \item A full pipeline across four NLP tasks:
+  \begin{itemize}
+    \item Task 1: unigram/bigram/trigram language modeling (MLE)
+    \item Task 2: smoothing comparison for n-gram LMs
+    \item Task 3: sentiment classification (NB and Logistic Regression)
+    \item Task 4: dot-as-sentence-boundary binary classification
+  \end{itemize}
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Data and Split Setup}
+\small
+\begin{table}
+\centering
+\scriptsize
+\begin{tabular}{
+>{\raggedright\arraybackslash}p{0.08\linewidth}
+>{\raggedright\arraybackslash}p{0.40\linewidth}
+>{\raggedright\arraybackslash}p{0.42\linewidth}
+}
+\toprule
+Task & Data & Train / Dev / Test \\
+\midrule
+1 & \texttt{Corpora/News/corpus.txt} & 560,000 / 70,000 / 70,000 (80/10/10) \\
+2 & \texttt{Corpora/News/corpus.txt} & 560,000 / 70,000 / 70,000 (80/10/10) \\
+3 & \texttt{sentiment\_dataset/dataset\_v1.csv} & 25,600 / 6,400 / 8,000 (70/15/15) \\
+4 & \texttt{dot\_labeled\_data.csv} & 140,000 / 30,000 / 30,000 (70/15/15) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{0.3cm}
+\begin{itemize}
+  \item Task 3 and Task 4 use stratified splits.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Task 1: N-gram LM with MLE}
+\textbf{Modeling decisions}
+\begin{itemize}
+  \item Tokenized news sentences and trained unigram, bigram, trigram MLE models.
+  \item Replaced rare training tokens (\(<2\) frequency) with \texttt{<UNK>}.
+  \item Evaluated by perplexity on held-out test sentences.
+\end{itemize}
+
+\vspace{0.2cm}
+\textbf{Key result}
+\begin{table}
+\centering
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Unigram MLE PPL & 3759.5357 \\
+Bigram MLE PPL & $\infty$ \\
+Trigram MLE PPL & $\infty$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\small
+Takeaway: plain MLE fails for higher-order n-grams because unseen test events get zero probability.
+\end{frame}
+
+\begin{frame}{Task 2: Smoothing Comparison}
+\textbf{What We compared}
+\begin{itemize}
+  \item Laplace, interpolation, backoff, and Kneser--Ney for bigram and trigram models.
+  \item Interpolation weights tuned on dev set:
+  \begin{itemize}
+    \item Bigram: \((\lambda_1,\lambda_2)=(0.1,0.9)\)
+    \item Trigram: \((\lambda_1,\lambda_2,\lambda_3)=(0.1,0.3,0.6)\)
+  \end{itemize}
+\end{itemize}
+
+\begin{table}
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Method & Bigram PPL & Trigram PPL \\
+\midrule
+Laplace & 2958.8623 & 13576.9329 \\
+Interpolation & 156.8298 & 70.8347 \\
+Backoff & 148.2803 & 61.2244 \\
+Kneser--Ney & \textbf{141.2498} & \textbf{58.2074} \\
+\bottomrule
+\end{tabular}
+\end{table}
+\end{frame}
+
+\begin{frame}{Task 2: Interpretation}
+\begin{itemize}
+  \item Kneser--Ney was best for both bigram and trigram perplexity.
+  \item Trigram + smoothing outperformed bigram + smoothing, so extra context was useful after sparsity was fixed.
+  \item Laplace gave the worst perplexity by a large margin in this setup.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Task 3: Sentiment Classification Setup}
+\small
+\textbf{Models}
+\begin{itemize}
+  \item Multinomial Naive Bayes
+  \item Bernoulli Naive Bayes
+  \item Logistic Regression (\texttt{liblinear})
+\end{itemize}
+
+\textbf{Feature sets}
+\begin{itemize}
+  \item \texttt{bow}: CountVectorizer with unigram+bigram, \texttt{min\_df=2}, \texttt{max\_features=30000}
+  \item \texttt{lexicon}: 6 handcrafted sentiment/negation features
+  \item \texttt{bow\_lexicon}: concatenation of both
+\end{itemize}
+
+\textbf{Tuning}
+\begin{itemize}
+  \item NB: \(\alpha \in \{0.05,0.1,0.3,0.5,1.0,2.0\}\)
+  \item LR: \(C \in \{0.1,0.3,0.5,1,2,5,10\}\), class weights \(\{\texttt{none}, \texttt{balanced}\}\)
+  \item Selection metric: dev macro-F1
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Task 3: Main Results}
+\small
+\begin{table}
+\centering
+\begin{tabular}{p{0.22\linewidth}p{0.17\linewidth}p{0.22\linewidth}rrr}
+\toprule
+Model & Best features & Best setting & Dev macro-F1 & Test macro-F1 & Test Acc. \\
+\midrule
+MNB & \texttt{bow} & \(\alpha=0.05\) & 0.8491 & 0.8490 & 0.8490 \\
+BNB & \texttt{bow} & \(\alpha=0.10\) & 0.8528 & 0.8547 & 0.8550 \\
+LR & \texttt{bow\_lexicon} & \(C=0.3\), balanced & \textbf{0.8974} & \textbf{0.9009} & \textbf{0.9010} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{0.2cm}
+\begin{itemize}
+  \item Best classifier: Logistic Regression with \texttt{bow\_lexicon}.
+  \item McNemar tests show LR is significantly stronger than both NB variants (\(p \approx 0\)).
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Task 3: What Helped and What Did Not}
+\begin{itemize}
+  \item Lexicon-only features were weak (\(\approx 0.64\) macro-F1), so they cannot replace text n-grams.
+  \item But adding lexicon cues on top of BoW gave LR a small but real lift:
+  \[
+  0.8992 \rightarrow 0.9009 \text{ (test macro-F1)}.
+  \]
+  \item This suggests handcrafted polarity and negation cues still add signal when combined with data-driven features.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Task 4: Dot Boundary Classifier Setup}
+\small
+\begin{itemize}
+  \item Binary classification on \texttt{dot\_labeled\_data.csv}.
+  \item Inputs: all columns except \texttt{label}; vectorized with \texttt{DictVectorizer}.
+  \item Model: Logistic Regression with both L2 and L1 regularization.
+  \item Tuned \(C \in \{0.01,0.1,1,10,100\}\) on dev F1.
+  \item Tuned decision threshold on dev, scanning 0.10 to 0.89 (step 0.01).
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Task 4: L1 vs L2 Results}
+\small
+\begin{table}
+\centering
+\begin{tabular}{lrrrrrrr}
+\toprule
+Penalty & \(C\) & Thr. & Dev F1 & Test Acc. & Prec. & Rec. & Test F1 \\
+\midrule
+L2 & 10 & 0.64 & 0.9993 & 0.9992 & 0.9980 & 0.9990 & 0.9985 \\
+L1 & 10 & 0.59 & 0.9993 & \textbf{0.9993} & \textbf{0.9985} & 0.9990 & \textbf{0.9988} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{0.2cm}
+Final selection: \textbf{L1} (highest test F1).
+\end{frame}
+
+\begin{frame}{UI and Demo Layer}
+\begin{itemize}
+  \item Added two interfaces:
+  \begin{itemize}
+    \item \texttt{results\_ui.py}: Tkinter dashboard to run Task 1--4 and inspect metrics quickly.
+    \item \texttt{localhost\_ui.py}: Streamlit local web app with results plus interactive demos.
+  \end{itemize}
+  \item Streamlit side includes practical demos for:
+  \begin{itemize}
+    \item LM sentence analysis with smoothing comparison,
+    \item custom-text sentiment prediction,
+    \item dot-boundary predictions on user text.
+  \end{itemize}
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Final Takeaways}
+\begin{itemize}
+  \item MLE alone is not enough for higher-order n-gram LMs; smoothing is essential.
+  \item Kneser--Ney was the most reliable smoothing method in this dataset.
+  \item For sentiment, Logistic Regression + combined BoW/lexicon features performed best.
+  \item For dot boundary detection, both L1 and L2 were very strong, with L1 slightly better.
+  \item The UI tools made it easier to verify and compare models without changing core code.
+\end{itemize}
+\end{frame}
+
+\end{document}

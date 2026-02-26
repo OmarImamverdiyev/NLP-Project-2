@@ -1,0 +1,299 @@
+NLP Project 2 - 10 Minute Presentation Speech Script
+
+Speaker note:
+- Target pace is about 130 to 145 words per minute.
+- This script is written to fit around 10 minutes.
+- Numbers below match the current project outputs in test-results.txt and the slides in presentation.pdf.
+
+================================================================
+SLIDE 1 - Title (NLP Project 2, Tasks 1-4)
+================================================================
+Good [morning/afternoon], everyone. Today I will present our NLP Project 2, which covers four connected tasks: n-gram language modeling, 
+smoothing for sparse language models, sentiment classification, and dot-as-sentence-boundary classification.
+
+Our goal was to build a full, reproducible pipeline and justify each modeling decision. I will explain what we implemented, why we implemented it that way, and what the results mean.
+
+================================================================
+SLIDE 2 - What We Built
+================================================================
+At a high level, we built one coherent pipeline across four tasks.
+
+Task 1 is unigram, bigram, and trigram language modeling with maximum likelihood estimation.
+Task 2 extends this with smoothing methods to handle sparsity.
+Task 3 is supervised sentiment classification with Naive Bayes and Logistic Regression.
+Task 4 is binary classification to detect whether a dot indicates sentence boundary or not.
+
+Across all tasks, we used the same principles: tune on dev not test, pick metrics that match the objective, and compare strong baselines with stronger models.
+
+================================================================
+SLIDE 3 - Data Split Setup
+================================================================
+Data splitting is one of the most important design choices, so we made it explicit.
+
+For Tasks 1 and 2, using the news corpus, we used 120,000 sentences total and split 80/10/10:
+- Train: 96,000
+- Dev: 12,000
+- Test: 12,000
+
+For Task 3 sentiment, from 40,000 samples in dataset_v1.csv:
+- Train: 25,600
+- Dev: 6,400
+- Test: 8,000
+This corresponds to train-pool plus test split, then a dev split inside train-pool.
+
+For Task 4 V2 dot-boundary detection from dot_labeled_data.csv:
+- Train: 140,000
+- Dev: 30,000
+- Test: 30,000
+
+Why this split strategy? Dev is for tuning and threshold selection, and test is kept untouched for unbiased final reporting.
+
+================================================================
+SLIDE 4 - Task 1: N-gram LM with MLE
+================================================================
+In Task 1, we trained unigram, bigram, and trigram language models with plain MLE.
+
+Implementation decisions:
+1. Tokenize sentences and add boundary markers for higher-order n-grams.
+2. Replace rare training tokens, frequency less than 2, with <UNK>.
+3. Apply train-vocabulary mapping consistently to dev and test.
+4. Evaluate with perplexity on held-out test data.
+
+Why these choices?
+- <UNK> controls vocabulary growth and OOV behavior.
+- Perplexity is the standard intrinsic LM metric.
+- MLE is the right baseline to expose sparsity before smoothing.
+
+Result:
+- Unigram perplexity: 3296.2567
+- Bigram perplexity: infinity
+- Trigram perplexity: infinity
+
+This is expected: if a test n-gram is unseen, MLE gives probability zero, and perplexity becomes infinite.
+
+================================================================
+SLIDE 5 - Task 2: Smoothing Comparison
+================================================================
+Task 2 addresses the exact weakness from Task 1: sparsity.
+
+We compared four smoothing methods for both bigram and trigram:
+1. Laplace
+2. Linear interpolation
+3. Absolute discounting backoff
+4. Kneser-Ney
+
+Interpolation weights were tuned on dev set:
+- Bigram lambdas: (0.2, 0.8)
+- Trigram lambdas: (0.2, 0.3, 0.5)
+
+For backoff and Kneser-Ney, discount d was set to 0.75, a standard practical default.
+
+Why these methods? Laplace is a baseline; interpolation balances context levels; backoff and Kneser-Ney are stronger count-based ways to reassign probability mass under sparsity.
+
+================================================================
+SLIDE 6 - Task 2 Results and Interpretation
+================================================================
+Now the key numbers.
+
+Bigram perplexity:
+- Laplace: 3572.4528
+- Interpolation: 167.9878
+- Backoff: 158.2786
+- Kneser-Ney: 150.0579
+
+Trigram perplexity:
+- Laplace: 12556.2180
+- Interpolation: 88.0896
+- Backoff: 74.7584
+- Kneser-Ney: 70.7616
+
+Interpretation:
+1. Strong smoothing methods clearly beat Laplace.
+2. Smoothed trigram beats smoothed bigram, so extra context helps once sparsity is handled.
+3. Kneser-Ney is best overall.
+
+Why Kneser-Ney often wins theoretically:
+Its continuation probability better models how likely a word is to appear in novel contexts, instead of relying only on raw unigram frequency.
+
+================================================================
+SLIDE 7 - Task 3: Sentiment Classification Setup
+================================================================
+Task 3 compares three classifiers:
+1. Multinomial Naive Bayes
+2. Bernoulli Naive Bayes
+3. Logistic Regression with liblinear solver
+
+Feature sets:
+1. BoW only
+2. Lexicon-only handcrafted features
+3. BoW + lexicon concatenation
+
+BoW setup:
+- CountVectorizer with unigram and bigram (ngram_range=(1,2))
+- min_df=2
+- max_features=30000
+
+Lexicon block includes 6 sentiment/negation-oriented signals, including positive and negative counts, polarity difference, normalized polarity, exclamation cue, and negation-aware signal.
+
+Why this design?
+- NB gives probabilistic baselines, LR gives a strong discriminative baseline.
+- BoW plus lexicon tests whether linguistic priors add value.
+- We select by dev macro-F1 to avoid majority-class bias.
+
+================================================================
+SLIDE 8 - Task 3 Main Results
+================================================================
+Best model results on test:
+
+Multinomial NB:
+- Accuracy: 0.8490
+- Macro-F1: 0.8490
+
+Bernoulli NB:
+- Accuracy: 0.8550
+- Macro-F1: 0.8547
+
+Logistic Regression (best with C=0.3, class_weight=balanced, feature set bow_lexicon):
+- Accuracy: 0.9010
+- Macro-F1: 0.9009
+
+McNemar significance tests:
+- LR vs MNB: p approximately 0.0000
+- LR vs BNB: p approximately 0.0000
+- MNB vs BNB: p approximately 0.0485
+
+Why include McNemar? Metric gaps alone are not enough; McNemar tests paired prediction differences on the same test set.
+
+================================================================
+SLIDE 9 - What Helped and What Did Not
+================================================================
+Important feature-ablation insight:
+- Lexicon-only is weak: macro-F1 around 0.64.
+- But adding lexicon to BoW gives a small but real gain for Logistic Regression:
+  from around 0.8992 to 0.9009 macro-F1.
+
+Why this happens: BoW captures broad lexical evidence, while handcrafted cues still help on negation and polarity flips.
+
+So our conclusion is balanced:
+Handcrafted features do not replace distributional features, but they can be useful as complementary cues.
+
+================================================================
+SLIDE 10 - Task 4: Dot Boundary Classifier (V2)
+================================================================
+Task 4 is binary classification:
+Does this dot end a sentence, or not?
+
+Data pipeline:
+1. Use labeled dot dataset with a label column.
+2. Use all non-label columns as input features.
+3. Convert mixed categorical/numeric features with DictVectorizer.
+4. Train Logistic Regression with liblinear.
+5. Compare L2 and L1 regularization.
+6. Tune C from {0.01, 0.1, 1, 10, 100} on dev F1.
+7. Tune threshold from 0.10 to 0.89 with step 0.01, instead of fixed 0.5.
+
+Why this design?
+- DictVectorizer handles mixed categorical and numeric feature rows cleanly.
+- L1 can select sparse features; L2 gives stable shrinkage.
+- Threshold tuning is better than fixed 0.5 when optimizing F1.
+
+================================================================
+SLIDE 11 - Task 4 Results (L1 vs L2)
+================================================================
+Both variants performed extremely well.
+
+L2:
+- Threshold: 0.64
+- Accuracy: 0.9992
+- Precision: 0.9980
+- Recall: 0.9990
+- F1: 0.9985
+
+L1:
+- Threshold: 0.59
+- Accuracy: 0.9993
+- Precision: 0.9985
+- Recall: 0.9990
+- F1: 0.9988
+
+Final selection: L1, because it gave the best F1 and slightly better overall test behavior.
+
+Interpretation: context features in this dataset separate the classes very well; L1 and L2 are both strong, with a small edge for L1.
+
+================================================================
+SLIDE 12 - UI Layer and Why We Built It
+================================================================
+We also built two interfaces:
+1. results_ui.py (Tkinter dashboard)
+2. localhost_ui.py (Streamlit local web app with interactive demos)
+
+Why spend effort on UI?
+- Faster verification and demonstration.
+- Easier metric inspection and custom-input testing.
+- Better debugging without changing core code.
+
+The Streamlit app additionally includes practical demos for:
+- LM sentence analysis and smoothing comparison
+- Sentiment prediction on custom text
+- Dot-boundary prediction in user text
+
+================================================================
+SLIDE 13 - Final Takeaways
+================================================================
+I will close with five concise takeaways.
+
+1. Plain MLE is not enough for higher-order n-gram modeling; smoothing is essential.
+2. In our setup, Kneser-Ney was the most reliable smoothing method.
+3. For sentiment, Logistic Regression with BoW plus lexicon was best.
+4. For dot-boundary detection, both regularizations were excellent, with L1 slightly better.
+5. Building reusable tooling and UI improved reproducibility and made evaluation easier.
+
+Thank you. I can now take theoretical or implementation questions.
+
+================================================================
+BACKUP: LIKELY THEORY QUESTIONS AND STRONG ANSWERS
+================================================================
+Q1. Why does bigram/trigram MLE give infinite perplexity?
+A1. Because unseen n-grams get probability zero. One zero in the product makes sentence probability zero, so log probability goes to negative infinity and perplexity becomes infinite.
+
+Q2. Why not just use Laplace and stop there?
+A2. Laplace over-smooths in large sparse vocabularies by assigning too much mass to unseen events. That is why perplexity stayed very high, especially in trigram.
+
+Q3. Why is Kneser-Ney better than simple backoff in many cases?
+A3. Kneser-Ney uses continuation probability, rewarding words that appear in diverse contexts, not only frequent words. This usually models unseen contexts better.
+
+Q4. Why tune interpolation lambdas on dev rather than set manually?
+A4. The best tradeoff between low-order and high-order context is data-dependent. Dev tuning avoids test leakage and provides objective model selection.
+
+Q5. Why macro-F1 for Task 3 selection?
+A5. Macro-F1 treats each class equally and is less biased by class distribution than accuracy. It is better when we care about balanced sentiment performance.
+
+Q6. Why compare NB and Logistic Regression?
+A6. They represent different statistical assumptions: generative conditional independence versus discriminative linear boundary. This makes comparison theoretically meaningful.
+
+Q7. Why include handcrafted lexicon features if BoW is strong?
+A7. BoW is strong globally, but handcrafted cues capture targeted phenomena like negation flips. The measured gain is small but consistent for the best model.
+
+Q8. Why run McNemar after reporting F1?
+A8. F1 gives effect size on a metric; McNemar evaluates whether prediction differences are statistically significant on paired test instances.
+
+Q9. Why DictVectorizer in Task 4?
+A9. Input rows include mixed categorical and numeric fields. DictVectorizer cleanly one-hot encodes categorical keys while preserving numeric values.
+
+Q10. Why tune decision threshold instead of using 0.5?
+A10. 0.5 is not always optimal for F1. Threshold tuning on dev lets us balance precision and recall according to the evaluation target.
+
+Q11. Why compare L1 and L2 instead of picking one regularizer directly?
+A11. L1 can perform sparse feature selection, L2 gives smooth shrinkage. Since feature space is sparse and high-dimensional, both are plausible; comparison is empirical and justified.
+
+Q12. Why split into train/dev/test instead of cross-validation everywhere?
+A12. We needed one final untouched test set for clean reporting across multiple tuned components. Dev handles tuning, test handles final unbiased evaluation.
+
+Q13. How do you ensure reproducibility?
+A13. Fixed random seed, explicit split logic, deterministic data paths, and saved metrics files for each task.
+
+Q14. What is one limitation in this project?
+A14. The models are mostly classical and linear. Stronger neural baselines could be added, but we intentionally prioritized interpretable methods aligned with assignment scope.
+
+Q15. If you had more time, what would you improve first?
+A15. Add confidence intervals and repeated runs for stability, plus error analysis by linguistic category to explain where each model fails.
