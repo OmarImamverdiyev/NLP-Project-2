@@ -42,7 +42,14 @@ from core.sentiment_task import (
 from core.text_utils import tokenize_words
 
 
-TASK2_SMOOTH_KEYS = [
+TASK2_SMOOTH_KEYS_BIGRAM = [
+    "ppl_bigram_laplace",
+    "ppl_bigram_interpolation",
+    "ppl_bigram_backoff",
+    "ppl_bigram_kneser_ney",
+]
+
+TASK2_SMOOTH_KEYS_TRIGRAM = [
     "ppl_trigram_laplace",
     "ppl_trigram_interpolation",
     "ppl_trigram_backoff",
@@ -704,8 +711,16 @@ def _run_results_panel(
                 min_freq=min_freq,
             )
             metrics = dict(metrics)
-            best_key = min(TASK2_SMOOTH_KEYS, key=lambda k: metrics[k])
-            metrics["best_smoothing_by_ppl"] = best_key
+            metrics["best_bigram_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_BIGRAM, key=lambda k: metrics[k]
+            )
+            metrics["best_trigram_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_TRIGRAM, key=lambda k: metrics[k]
+            )
+            metrics["best_overall_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_BIGRAM + TASK2_SMOOTH_KEYS_TRIGRAM,
+                key=lambda k: metrics[k],
+            )
             st.session_state["task_results"]["Task 2"] = metrics
             saved_path = _persist_task_result_txt(root_path, 2, metrics)
             st.session_state["task_result_files"]["Task 2"] = str(saved_path)
@@ -735,6 +750,12 @@ def _run_results_panel(
             task2 = {
                 "num_sentences": t12.get("num_sentences"),
                 "vocab_size": t12.get("vocab_size"),
+                "bigram_interp_lambda1": t12.get("bigram_interp_lambda1"),
+                "bigram_interp_lambda2": t12.get("bigram_interp_lambda2"),
+                "ppl_bigram_laplace": t12.get("ppl_bigram_laplace"),
+                "ppl_bigram_interpolation": t12.get("ppl_bigram_interpolation"),
+                "ppl_bigram_backoff": t12.get("ppl_bigram_backoff"),
+                "ppl_bigram_kneser_ney": t12.get("ppl_bigram_kneser_ney"),
                 "interp_lambda1": t12.get("interp_lambda1"),
                 "interp_lambda2": t12.get("interp_lambda2"),
                 "interp_lambda3": t12.get("interp_lambda3"),
@@ -743,7 +764,16 @@ def _run_results_panel(
                 "ppl_trigram_backoff": t12.get("ppl_trigram_backoff"),
                 "ppl_trigram_kneser_ney": t12.get("ppl_trigram_kneser_ney"),
             }
-            task2["best_smoothing_by_ppl"] = min(TASK2_SMOOTH_KEYS, key=lambda k: task2[k])
+            task2["best_bigram_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_BIGRAM, key=lambda k: task2[k]
+            )
+            task2["best_trigram_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_TRIGRAM, key=lambda k: task2[k]
+            )
+            task2["best_overall_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_BIGRAM + TASK2_SMOOTH_KEYS_TRIGRAM,
+                key=lambda k: task2[k],
+            )
             task3 = run_task3(root_path)
             task4 = run_task4(
                 dataset_path=task4_dataset_path,

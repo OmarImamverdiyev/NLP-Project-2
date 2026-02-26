@@ -1,0 +1,6 @@
+=== Task 1 ===
+num_sentences: 120000.000000
+vocab_size: 58418.000000
+ppl_unigram_mle: 3296.256698
+ppl_bigram_mle: inf
+ppl_trigram_mle: inf

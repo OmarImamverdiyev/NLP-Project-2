@@ -100,15 +100,27 @@ def main() -> None:
         )
         print_section("Task 4", t4)
 
-    smooth_keys = [
+    bigram_smooth_keys = [
+        "ppl_bigram_laplace",
+        "ppl_bigram_interpolation",
+        "ppl_bigram_backoff",
+        "ppl_bigram_kneser_ney",
+    ]
+    trigram_smooth_keys = [
         "ppl_trigram_laplace",
         "ppl_trigram_interpolation",
         "ppl_trigram_backoff",
         "ppl_trigram_kneser_ney",
     ]
-    vals = {k: t12[k] for k in smooth_keys}
-    best = min(vals.items(), key=lambda kv: kv[1])[0]
-    print(f"\nBest smoothing by perplexity: {best}")
+    vals_bigram = {k: t12[k] for k in bigram_smooth_keys}
+    vals_trigram = {k: t12[k] for k in trigram_smooth_keys}
+    vals_overall = {k: t12[k] for k in bigram_smooth_keys + trigram_smooth_keys}
+    best_bigram = min(vals_bigram.items(), key=lambda kv: kv[1])[0]
+    best_trigram = min(vals_trigram.items(), key=lambda kv: kv[1])[0]
+    best_overall = min(vals_overall.items(), key=lambda kv: kv[1])[0]
+    print(f"\nBest bigram smoothing by perplexity: {best_bigram}")
+    print(f"Best trigram smoothing by perplexity: {best_trigram}")
+    print(f"Best overall smoothing by perplexity: {best_overall}")
 
 
 if __name__ == "__main__":

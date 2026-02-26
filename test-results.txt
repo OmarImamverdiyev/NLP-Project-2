@@ -1,0 +1,188 @@
+=== Task 1 ===
+num_sentences: 120000.000000
+vocab_size: 58418.000000
+ppl_unigram_mle: 3296.256698
+ppl_bigram_mle: inf
+ppl_trigram_mle: inf
+
+=== Task 2 ===
+num_sentences: 120000.000000
+vocab_size: 58418.000000
+bigram_interp_lambda1: 0.200000
+bigram_interp_lambda2: 0.800000
+ppl_bigram_laplace: 3572.452820
+ppl_bigram_interpolation: 167.987768
+ppl_bigram_backoff: 158.278582
+ppl_bigram_kneser_ney: 150.057858
+interp_lambda1: 0.200000
+interp_lambda2: 0.300000
+interp_lambda3: 0.500000
+ppl_trigram_laplace: 12556.218028
+ppl_trigram_interpolation: 88.089610
+ppl_trigram_backoff: 74.758399
+ppl_trigram_kneser_ney: 70.761602
+best_bigram_smoothing_by_ppl: ppl_bigram_kneser_ney
+best_trigram_smoothing_by_ppl: ppl_trigram_kneser_ney
+best_overall_smoothing_by_ppl: ppl_trigram_kneser_ney
+
+
+=== Task 3 ===
+num_samples: 40000.000000
+positive_ratio: 0.515650
+train_examples: 25600.000000
+dev_examples: 6400.000000
+test_examples: 8000.000000
+num_features_bow: 30000.000000
+num_features_lexicon: 6.000000
+feature_sets_compared_count: 3.000000
+data_source_code: 0.000000
+data_source: sentiment_dataset:sentiment_dataset\dataset_v1.csv
+uses_sklearn_models: 1.000000
+mnb_best_alpha: 0.050000
+bnb_best_alpha: 0.100000
+lr_best_c: 0.300000
+lr_class_weight_balanced: 1.000000
+mnb_best_feature_set: bow
+bnb_best_feature_set: bow
+lr_best_feature_set: bow_lexicon
+mnb_cv_macro_f1: 0.849060
+bnb_cv_macro_f1: 0.852756
+lr_cv_macro_f1: 0.897415
+mnb_dev_accuracy: 0.849063
+mnb_dev_f1: 0.848494
+mnb_dev_macro_f1: 0.849060
+bnb_dev_accuracy: 0.852969
+bnb_dev_f1: 0.858347
+bnb_dev_macro_f1: 0.852756
+lr_dev_accuracy: 0.897500
+lr_dev_f1: 0.900365
+lr_dev_macro_f1: 0.897415
+mnb_accuracy: 0.849000
+mnb_f1: 0.850236
+mnb_macro_f1: 0.848990
+bnb_accuracy: 0.855000
+bnb_f1: 0.861608
+bnb_macro_f1: 0.854669
+lr_accuracy: 0.901000
+lr_f1: 0.904463
+lr_macro_f1: 0.900870
+p_lr_vs_mnb: 0.000000
+p_lr_vs_bnb: 0.000000
+p_mnb_vs_bnb: 0.048505
+best_classifier: logistic_regression
+best_classifier_feature_set: bow_lexicon
+best_classifier_with_features: logistic_regression:bow_lexicon
+best_significant_vs_others_alpha0_05: 1.000000
+mnb_bow_dev_accuracy: 0.849063
+mnb_bow_dev_f1: 0.848494
+mnb_bow_dev_macro_f1: 0.849060
+mnb_bow_accuracy: 0.849000
+mnb_bow_f1: 0.850236
+mnb_bow_macro_f1: 0.848990
+mnb_bow_alpha: 0.050000
+mnb_lexicon_dev_accuracy: 0.653281
+mnb_lexicon_dev_f1: 0.718651
+mnb_lexicon_dev_macro_f1: 0.633496
+mnb_lexicon_accuracy: 0.658625
+mnb_lexicon_f1: 0.721298
+mnb_lexicon_macro_f1: 0.640443
+mnb_lexicon_alpha: 0.050000
+mnb_bow_lexicon_dev_accuracy: 0.848437
+mnb_bow_lexicon_dev_f1: 0.848295
+mnb_bow_lexicon_dev_macro_f1: 0.848437
+mnb_bow_lexicon_accuracy: 0.851000
+mnb_bow_lexicon_f1: 0.852840
+mnb_bow_lexicon_macro_f1: 0.850977
+mnb_bow_lexicon_alpha: 0.050000
+bnb_bow_dev_accuracy: 0.852969
+bnb_bow_dev_f1: 0.858347
+bnb_bow_dev_macro_f1: 0.852756
+bnb_bow_accuracy: 0.855000
+bnb_bow_f1: 0.861608
+bnb_bow_macro_f1: 0.854669
+bnb_bow_alpha: 0.100000
+bnb_lexicon_dev_accuracy: 0.655625
+bnb_lexicon_dev_f1: 0.719021
+bnb_lexicon_dev_macro_f1: 0.637154
+bnb_lexicon_accuracy: 0.661125
+bnb_lexicon_f1: 0.721920
+bnb_lexicon_macro_f1: 0.644115
+bnb_lexicon_alpha: 0.050000
+bnb_bow_lexicon_dev_accuracy: 0.851875
+bnb_bow_lexicon_dev_f1: 0.857572
+bnb_bow_lexicon_dev_macro_f1: 0.851638
+bnb_bow_lexicon_accuracy: 0.854250
+bnb_bow_lexicon_f1: 0.860992
+bnb_bow_lexicon_macro_f1: 0.853906
+bnb_bow_lexicon_alpha: 0.050000
+lr_bow_dev_accuracy: 0.896719
+lr_bow_dev_f1: 0.899864
+lr_bow_dev_macro_f1: 0.896617
+lr_bow_accuracy: 0.899375
+lr_bow_f1: 0.903117
+lr_bow_macro_f1: 0.899225
+lr_bow_c: 0.300000
+lr_bow_class_weight: none
+lr_lexicon_dev_accuracy: 0.655625
+lr_lexicon_dev_f1: 0.719021
+lr_lexicon_dev_macro_f1: 0.637154
+lr_lexicon_accuracy: 0.661125
+lr_lexicon_f1: 0.721920
+lr_lexicon_macro_f1: 0.644115
+lr_lexicon_c: 0.300000
+lr_lexicon_class_weight: balanced
+lr_bow_lexicon_dev_accuracy: 0.897500
+lr_bow_lexicon_dev_f1: 0.900365
+lr_bow_lexicon_dev_macro_f1: 0.897415
+lr_bow_lexicon_accuracy: 0.901000
+lr_bow_lexicon_f1: 0.904463
+lr_bow_lexicon_macro_f1: 0.900870
+lr_bow_lexicon_c: 0.300000
+lr_bow_lexicon_class_weight: balanced
+uses_only_sentiment_dataset: 1.000000
+num_samples_original: 40000.000000
+sampled_for_memory: 0.000000
+task3_max_samples: -1.000000
+dataset_path: sentiment_dataset\dataset_v1.csv 
+
+
+Tune of the task3:
+PS C:\for test\NLP-Project-2> python Task3\tune_task3.py --dataset-path sentiment_dataset\dataset_v1.csv --max-samples 0 --search-mode extended --selection-metric dev_macro_f1 --save-json Task3\tuning_task3_v1.json                                                                                                                                                  
+dataset=sentiment_dataset\dataset_v1.csv
+data_source=sentiment_dataset:sentiment_dataset\dataset_v1.csv
+samples=40000 (original=40000, sampled_for_memory=0, max_samples=none) positive_ratio=0.515650
+backend=sklearn
+
+
+=== TASK 4 V2 (L1 vs L2 COMPARISON) ===
+train=140000 dev=30000 test=30000
+
+--- TUNING L2 ---
+Best C: 10
+Best Dev F1: 0.9993
+Best Threshold: 0.64
+Dev F1: 0.9993
+
+Test Results:
+accuracy: 0.9992
+precision: 0.9980
+recall: 0.9990
+f1: 0.9985
+
+--- TUNING L1 ---
+Best C: 10
+Best Dev F1: 0.9993
+Best Threshold: 0.59
+Dev F1: 0.9993
+
+Test Results:
+accuracy: 0.9993
+precision: 0.9985
+recall: 0.9990
+f1: 0.9988
+
+=== FINAL COMPARISON ===
+L2 -> Accuracy=0.9992 F1=0.9985
+L1 -> Accuracy=0.9993 F1=0.9988
+
+BEST MODEL: L1

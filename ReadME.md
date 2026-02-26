@@ -50,12 +50,21 @@ python Task2/run_task2.py --max-sentences 50000 --min-freq 2
 By default, these commands also save metrics to:
 - `Task1/task1_results.txt`
 - `Task2/task2_results.txt`
+- `Task2/txt/bigrams_laplace.txt`
+- `Task2/txt/bigrams_interpolation.txt`
+- `Task2/txt/bigrams_backoff.txt`
+- `Task2/txt/bigrams_kneser_ney.txt`
+- `Task2/txt/trigrams_laplace.txt`
+- `Task2/txt/trigrams_interpolation.txt`
+- `Task2/txt/trigrams_backoff.txt`
+- `Task2/txt/trigrams_kneser_ney.txt`
 
 You can override output path:
 
 ```powershell
 python Task1/run_task1.py --output Task1/custom_task1_metrics.txt
 python Task2/run_task2.py --output Task2/custom_task2_metrics.txt
+python Task2/run_task2.py --txt-dir Task2/custom_txt
 ```
 
 Task 3:
@@ -98,9 +107,9 @@ python Task4/run_task4.py --max-docs 20000 --max-examples 30000 --max-vocab-toke
 - `core/paths.py`: Provides default corpus path (`Corpora/News/corpus.txt`).
 - `core/reporting.py`: Prints task metrics in a consistent format.
 
-#### Task 2: Trigram smoothing comparison
+#### Task 2: Bigram + trigram smoothing comparison
 - `Task2/run_task2.py`: Task 2 CLI entry point.
-- `core/language_modeling.py` (`run_task2`): Reuses LM preparation and compares smoothing methods (Laplace, interpolation, backoff, Kneser-Ney) by perplexity.
+- `core/language_modeling.py` (`run_task2`): Reuses LM preparation, compares Laplace/interpolation/backoff/Kneser-Ney for both bigram and trigram perplexity, tunes interpolation lambdas on dev data, and exports per-method bigram/trigram probability tables.
 - `core/text_utils.py`: Shared sentence splitting and tokenization.
 - `core/paths.py`: Provides default corpus path (`Corpora/News/corpus.txt`).
 - `core/reporting.py`: Prints task metrics and summary output.
@@ -128,7 +137,7 @@ python Task4/run_task4.py --max-docs 20000 --max-examples 30000 --max-vocab-toke
 
 ### Shared runner
 
-- `assignment_tasks.py`: Runs Task 1+2, Task 3, and Task 4 in one execution and prints the best Task 2 smoothing method.
+- `assignment_tasks.py`: Runs Task 1+2, Task 3, and Task 4 in one execution and prints best Task 2 smoothing by bigram, trigram, and overall perplexity.
 
 ### Data files relevant to tasks
 

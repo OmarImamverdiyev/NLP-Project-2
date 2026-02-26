@@ -258,6 +258,37 @@ def tune_linear_interpolation(
     return best
 
 
+def tune_bigram_interpolation(
+    dev_sents: Sequence[List[str]],
+    c: NgramCounts,
+    step: float = 0.1,
+) -> Tuple[float, float]:
+    best = (0.3, 0.7)
+    best_nll = float("inf")
+    vals = [round(i * step, 10) for i in range(int(1 / step) + 1)]
+
+    for l1 in vals:
+        l2 = 1.0 - l1
+        if l2 < 0:
+            continue
+
+        nll = 0.0
+        n = 0
+        for sent in dev_sents:
+            s2 = add_markers(sent, 2)
+            for i in range(1, len(s2)):
+                h, w = s2[i - 1], s2[i]
+                p = l1 * p_unigram_mle(w, c) + l2 * p_bigram_mle(h, w, c)
+                p = max(p, 1e-12)
+                nll -= math.log(p)
+                n += 1
+
+        if n and nll < best_nll:
+            best_nll = nll
+            best = (l1, l2)
+    return best
+
+
 def perplexity_unigram(
     sents: Sequence[List[str]],
     c: NgramCounts,
@@ -285,9 +316,12 @@ def perplexity_bigram(
     sents: Sequence[List[str]],
     c: NgramCounts,
     mode: str = "mle",
+    lambdas: Tuple[float, float] = (0.3, 0.7),
+    d: float = 0.75,
 ) -> float:
     logprob = 0.0
     n = 0
+    l1, l2 = lambdas
     for sent in sents:
         s2 = add_markers(sent, 2)
         for i in range(1, len(s2)):
@@ -296,6 +330,12 @@ def perplexity_bigram(
                 p = p_bigram_mle(h, w, c)
             elif mode == "laplace":
                 p = p_bigram_laplace(h, w, c)
+            elif mode == "interpolation":
+                p = l1 * p_unigram_mle(w, c) + l2 * p_bigram_mle(h, w, c)
+            elif mode == "backoff":
+                p = p_bigram_backoff(h, w, c, d=d)
+            elif mode == "kneser_ney":
+                p = p_bigram_kn(h, w, c, d=d)
             else:
                 raise ValueError(f"Unknown bigram mode: {mode}")
             if p <= 0:
@@ -343,6 +383,126 @@ def perplexity_trigram(
     return math.exp(-logprob / max(n, 1))
 
 
+def _p_bigram_by_mode(
+    h: str,
+    w: str,
+    c: NgramCounts,
+    mode: str,
+    interp_lambdas: Tuple[float, float] = (0.3, 0.7),
+    d: float = 0.75,
+) -> float:
+    l1, l2 = interp_lambdas
+    if mode == "mle":
+        return p_bigram_mle(h, w, c)
+    if mode == "laplace":
+        return p_bigram_laplace(h, w, c)
+    if mode == "interpolation":
+        return l1 * p_unigram_mle(w, c) + l2 * p_bigram_mle(h, w, c)
+    if mode == "backoff":
+        return p_bigram_backoff(h, w, c, d=d)
+    if mode == "kneser_ney":
+        return p_bigram_kn(h, w, c, d=d)
+    raise ValueError(f"Unknown bigram mode: {mode}")
+
+
+def _p_trigram_by_mode(
+    u: str,
+    v: str,
+    w: str,
+    c: NgramCounts,
+    mode: str,
+    interp_lambdas: Tuple[float, float, float] = (0.2, 0.3, 0.5),
+    d: float = 0.75,
+) -> float:
+    l1, l2, l3 = interp_lambdas
+    if mode == "mle":
+        return p_trigram_mle(u, v, w, c)
+    if mode == "laplace":
+        return p_trigram_laplace(u, v, w, c)
+    if mode == "interpolation":
+        return (
+            l1 * p_unigram_mle(w, c)
+            + l2 * p_bigram_mle(v, w, c)
+            + l3 * p_trigram_mle(u, v, w, c)
+        )
+    if mode == "backoff":
+        return p_trigram_backoff(u, v, w, c, d=d)
+    if mode == "kneser_ney":
+        return p_trigram_kn(u, v, w, c, d=d)
+    raise ValueError(f"Unknown trigram mode: {mode}")
+
+
+def save_smoothed_ngram_tables(
+    c: NgramCounts,
+    out_dir: Path,
+    bigram_methods: Sequence[str] = ("laplace", "interpolation", "backoff", "kneser_ney"),
+    trigram_methods: Sequence[str] = ("laplace", "interpolation", "backoff", "kneser_ney"),
+    bigram_interp_lambdas: Tuple[float, float] = (0.3, 0.7),
+    trigram_interp_lambdas: Tuple[float, float, float] = (0.2, 0.3, 0.5),
+    d: float = 0.75,
+) -> Dict[str, Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ranked_bigrams = sorted(
+        c.bigram.items(),
+        key=lambda item: (-item[1], item[0][0], item[0][1]),
+    )
+    ranked_trigrams = sorted(
+        c.trigram.items(),
+        key=lambda item: (-item[1], item[0][0], item[0][1], item[0][2]),
+    )
+    saved: Dict[str, Path] = {}
+    for mode in bigram_methods:
+        path = out_dir / f"bigrams_{mode}.txt"
+        with path.open("w", encoding="utf-8") as f:
+            f.write("order: bigram\n")
+            f.write(f"method: {mode}\n")
+            if mode == "interpolation":
+                f.write(
+                    "interp_lambdas: "
+                    f"unigram={bigram_interp_lambdas[0]:.6f},"
+                    f"bigram={bigram_interp_lambdas[1]:.6f}\n"
+                )
+            f.write("history\tword\tcount\tprobability\n")
+            for (h, w), count in ranked_bigrams:
+                p = _p_bigram_by_mode(
+                    h,
+                    w,
+                    c,
+                    mode=mode,
+                    interp_lambdas=bigram_interp_lambdas,
+                    d=d,
+                )
+                f.write(f"{h}\t{w}\t{count}\t{p:.12f}\n")
+        saved[f"bigram_{mode}"] = path
+
+    for mode in trigram_methods:
+        path = out_dir / f"trigrams_{mode}.txt"
+        with path.open("w", encoding="utf-8") as f:
+            f.write("order: trigram\n")
+            f.write(f"method: {mode}\n")
+            if mode == "interpolation":
+                f.write(
+                    "interp_lambdas: "
+                    f"unigram={trigram_interp_lambdas[0]:.6f},"
+                    f"bigram={trigram_interp_lambdas[1]:.6f},"
+                    f"trigram={trigram_interp_lambdas[2]:.6f}\n"
+                )
+            f.write("history1\thistory2\tword\tcount\tprobability\n")
+            for (u, v, w), count in ranked_trigrams:
+                p = _p_trigram_by_mode(
+                    u,
+                    v,
+                    w,
+                    c,
+                    mode=mode,
+                    interp_lambdas=trigram_interp_lambdas,
+                    d=d,
+                )
+                f.write(f"{u}\t{v}\t{w}\t{count}\t{p:.12f}\n")
+        saved[f"trigram_{mode}"] = path
+    return saved
+
+
 def _prepare_lm_task_data(
     news_path: Path,
     max_sentences: int = 120000,
@@ -382,19 +542,35 @@ def _task2_metrics(
     test_mapped: Sequence[List[str]],
     counts: NgramCounts,
 ) -> Dict[str, float]:
-    best_lambdas = tune_linear_interpolation(dev_mapped, counts, step=0.1)
+    bigram_interp_lambdas = tune_bigram_interpolation(dev_mapped, counts, step=0.1)
+    trigram_interp_lambdas = tune_linear_interpolation(dev_mapped, counts, step=0.1)
+    ppl_bigram_lap = perplexity_bigram(test_mapped, counts, mode="laplace")
+    ppl_bigram_interp = perplexity_bigram(
+        test_mapped,
+        counts,
+        mode="interpolation",
+        lambdas=bigram_interp_lambdas,
+    )
+    ppl_bigram_backoff = perplexity_bigram(test_mapped, counts, mode="backoff", d=0.75)
+    ppl_bigram_kn = perplexity_bigram(test_mapped, counts, mode="kneser_ney", d=0.75)
     ppl_lap = perplexity_trigram(test_mapped, counts, mode="laplace")
     ppl_interp = perplexity_trigram(
-        test_mapped, counts, mode="interpolation", lambdas=best_lambdas
+        test_mapped, counts, mode="interpolation", lambdas=trigram_interp_lambdas
     )
     ppl_backoff = perplexity_trigram(test_mapped, counts, mode="backoff", d=0.75)
     ppl_kn = perplexity_trigram(test_mapped, counts, mode="kneser_ney", d=0.75)
     return {
         "num_sentences": float(len(sentences)),
         "vocab_size": float(len(vocab)),
-        "interp_lambda1": best_lambdas[0],
-        "interp_lambda2": best_lambdas[1],
-        "interp_lambda3": best_lambdas[2],
+        "bigram_interp_lambda1": bigram_interp_lambdas[0],
+        "bigram_interp_lambda2": bigram_interp_lambdas[1],
+        "ppl_bigram_laplace": ppl_bigram_lap,
+        "ppl_bigram_interpolation": ppl_bigram_interp,
+        "ppl_bigram_backoff": ppl_bigram_backoff,
+        "ppl_bigram_kneser_ney": ppl_bigram_kn,
+        "interp_lambda1": trigram_interp_lambdas[0],
+        "interp_lambda2": trigram_interp_lambdas[1],
+        "interp_lambda3": trigram_interp_lambdas[2],
         "ppl_trigram_laplace": ppl_lap,
         "ppl_trigram_interpolation": ppl_interp,
         "ppl_trigram_backoff": ppl_backoff,
@@ -419,13 +595,30 @@ def run_task2(
     news_path: Path,
     max_sentences: int = 120000,
     min_freq: int = 2,
+    txt_dir: Path | None = None,
 ) -> Dict[str, float]:
     sentences, vocab, dev_mapped, test_mapped, counts = _prepare_lm_task_data(
         news_path=news_path,
         max_sentences=max_sentences,
         min_freq=min_freq,
     )
-    return _task2_metrics(sentences, vocab, dev_mapped, test_mapped, counts)
+    metrics = _task2_metrics(sentences, vocab, dev_mapped, test_mapped, counts)
+    if txt_dir is not None:
+        save_smoothed_ngram_tables(
+            counts,
+            txt_dir,
+            bigram_interp_lambdas=(
+                metrics["bigram_interp_lambda1"],
+                metrics["bigram_interp_lambda2"],
+            ),
+            trigram_interp_lambdas=(
+                metrics["interp_lambda1"],
+                metrics["interp_lambda2"],
+                metrics["interp_lambda3"],
+            ),
+            d=0.75,
+        )
+    return metrics
 
 
 def run_task1_task2(
@@ -441,4 +634,3 @@ def run_task1_task2(
     t1 = _task1_metrics(sentences, vocab, test_mapped, counts)
     t2 = _task2_metrics(sentences, vocab, dev_mapped, test_mapped, counts)
     return {**t1, **t2}
-

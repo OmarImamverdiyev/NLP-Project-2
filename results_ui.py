@@ -12,7 +12,14 @@ from assignment_tasks import run_task1, run_task1_task2, run_task2, run_task3, r
 from core.paths import NEWS_CORPUS_PATH, ROOT
 
 
-TASK2_SMOOTH_KEYS = [
+TASK2_SMOOTH_KEYS_BIGRAM = [
+    "ppl_bigram_laplace",
+    "ppl_bigram_interpolation",
+    "ppl_bigram_backoff",
+    "ppl_bigram_kneser_ney",
+]
+
+TASK2_SMOOTH_KEYS_TRIGRAM = [
     "ppl_trigram_laplace",
     "ppl_trigram_interpolation",
     "ppl_trigram_backoff",
@@ -30,6 +37,12 @@ TASK1_KEYS = [
 TASK2_KEYS = [
     "num_sentences",
     "vocab_size",
+    "bigram_interp_lambda1",
+    "bigram_interp_lambda2",
+    "ppl_bigram_laplace",
+    "ppl_bigram_interpolation",
+    "ppl_bigram_backoff",
+    "ppl_bigram_kneser_ney",
     "interp_lambda1",
     "interp_lambda2",
     "interp_lambda3",
@@ -316,9 +329,17 @@ class ResultsUI(tk.Tk):
 
         def job() -> Dict[str, Any]:
             metrics = run_task2(**params)
-            best_key = min(TASK2_SMOOTH_KEYS, key=lambda key: metrics[key])
             metrics = dict(metrics)
-            metrics["best_smoothing_by_ppl"] = best_key
+            metrics["best_bigram_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_BIGRAM, key=lambda key: metrics[key]
+            )
+            metrics["best_trigram_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_TRIGRAM, key=lambda key: metrics[key]
+            )
+            metrics["best_overall_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_BIGRAM + TASK2_SMOOTH_KEYS_TRIGRAM,
+                key=lambda key: metrics[key],
+            )
             return metrics
 
         self._execute_job(
@@ -366,8 +387,16 @@ class ResultsUI(tk.Tk):
             t12 = run_task1_task2(**lm_params)
             task1 = {k: t12[k] for k in TASK1_KEYS if k in t12}
             task2 = {k: t12[k] for k in TASK2_KEYS if k in t12}
-            best_key = min(TASK2_SMOOTH_KEYS, key=lambda key: task2.get(key, float("inf")))
-            task2["best_smoothing_by_ppl"] = best_key
+            task2["best_bigram_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_BIGRAM, key=lambda key: task2.get(key, float("inf"))
+            )
+            task2["best_trigram_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_TRIGRAM, key=lambda key: task2.get(key, float("inf"))
+            )
+            task2["best_overall_smoothing_by_ppl"] = min(
+                TASK2_SMOOTH_KEYS_BIGRAM + TASK2_SMOOTH_KEYS_TRIGRAM,
+                key=lambda key: task2.get(key, float("inf")),
+            )
             task3 = run_task3(root)
             task4 = run_task4(**task4_params)
             return {
